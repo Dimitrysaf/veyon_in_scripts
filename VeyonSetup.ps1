@@ -132,6 +132,25 @@ function Invoke-MenuSelection {
     } while ($true)
 }
 
+function Invoke-ReturnToMenu {
+    <#
+    .SYNOPSIS
+        Prompts user to return to main menu
+    .DESCRIPTION
+        Displays a message asking user to press 0 to return to main menu.
+        Loops until 0 is pressed, then returns control to main menu.
+    #>
+    Write-Host ""
+    do {
+        $input = Read-Host "Press 0 to return to Main Menu"
+        if ($input -eq '0') {
+            break
+        } else {
+            Write-Host "Invalid input. Press 0 to return to Main Menu." -ForegroundColor $script:Colors.Warning
+        }
+    } while ($true)
+}
+
 function Test-VeyonInstalled {
     $veyonPath = "C:\Program Files\Veyon\veyon-configurator.exe"
     return Test-Path $veyonPath
@@ -572,7 +591,7 @@ function Install-Veyon {
         $confirm = Read-Host "Proceed with installation? (Y/n)"
         if ($confirm -eq 'n') {
             Write-Host "Installation cancelled." -ForegroundColor $script:Colors.Warning
-            Read-Host "Press Enter to continue"
+            Invoke-ReturnToMenu
             return
         }
         
@@ -967,7 +986,7 @@ function Install-Veyon {
         Write-Host ""
     }
     
-    Read-Host "Press Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 function Uninstall-Veyon {
@@ -978,7 +997,7 @@ function Uninstall-Veyon {
     # Check if Veyon is installed
     if (!(Test-VeyonInstalled)) {
         Write-Host "Veyon is not installed on this system." -ForegroundColor $script:Colors.Warning
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -1003,7 +1022,7 @@ function Uninstall-Veyon {
     $confirm = Read-Host "Are you sure you want to uninstall Veyon? (yes/N)"
     if ($confirm -ne 'yes') {
         Write-Host "Uninstallation cancelled." -ForegroundColor $script:Colors.Warning
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -1122,8 +1141,7 @@ function Uninstall-Veyon {
         Write-Host ""
     }
     
-    Write-Host ""
-    Read-Host "Press Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 function Set-VeyonConfiguration {
@@ -1133,7 +1151,7 @@ function Set-VeyonConfiguration {
     
     if (!(Test-VeyonInstalled)) {
         Write-Host "Veyon is not installed. Please install Veyon first." -ForegroundColor $script:Colors.Error
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -1278,7 +1296,7 @@ function New-VeyonAuthenticationKeys {
         Write-Host ""
     }
     
-    Read-Host "Press Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 function Ensure-TeacherKeys {
@@ -1391,7 +1409,7 @@ function Set-VeyonNetworkSettings {
         Write-Host "Failed to open Veyon Configurator: $_" -ForegroundColor $script:Colors.Error
     }
     
-    Read-Host "`nPress Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 function Set-VeyonAccessControl {
@@ -1412,7 +1430,7 @@ function Set-VeyonAccessControl {
         Write-Host "Failed to open Veyon Configurator: $_" -ForegroundColor $script:Colors.Error
     }
     
-    Read-Host "`nPress Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 function Set-VeyonLDAPIntegration {
@@ -1433,7 +1451,7 @@ function Set-VeyonLDAPIntegration {
         Write-Host "Failed to open Veyon Configurator: $_" -ForegroundColor $script:Colors.Error
     }
     
-    Read-Host "`nPress Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 function Export-VeyonConfiguration {
@@ -1468,7 +1486,7 @@ function Export-VeyonConfiguration {
         Write-Host "Configuration export failed: $_" -ForegroundColor $script:Colors.Error
     }
     
-    Read-Host "`nPress Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 function Import-VeyonConfiguration {
@@ -1507,7 +1525,7 @@ function Import-VeyonConfiguration {
         Write-Host "Invalid file path." -ForegroundColor $script:Colors.Error
     }
     
-    Read-Host "`nPress Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 #endregion
@@ -1843,7 +1861,7 @@ function Set-UserRestrictions {
     if (!$isAdmin) {
         Write-Host "WARNING: This script must be run as Administrator!" -ForegroundColor $script:Colors.Error
         Write-Host "Please run as Administrator to apply restrictions to non-admin users." -ForegroundColor $script:Colors.Error
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -1937,7 +1955,7 @@ function Set-UserRestrictions {
     
     if ($enabledRestrictions.Count -eq 0) {
         Write-Host "No restrictions selected." -ForegroundColor $script:Colors.Warning
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -2066,8 +2084,7 @@ function Set-UserRestrictions {
         Write-Host "Failed to apply restrictions: $_" -ForegroundColor $script:Colors.Error
     }
     
-    Write-Host ""
-    Read-Host "Press Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 #endregion
@@ -2224,7 +2241,7 @@ function Set-WindowsPersonalization {
     
     if ($enabledPersonalizations.Count -eq 0) {
         Write-Host "No personalization options selected." -ForegroundColor $script:Colors.Warning
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -2295,8 +2312,7 @@ function Set-WindowsPersonalization {
         Write-Host "Failed to apply personalization settings: $_" -ForegroundColor $script:Colors.Error
     }
     
-    Write-Host ""
-    Read-Host "Press Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 #endregion
@@ -2321,7 +2337,7 @@ function Rename-ComputerMenu {
     
     if ([string]::IsNullOrWhiteSpace($newName)) {
         Write-Host "Operation cancelled." -ForegroundColor $script:Colors.Warning
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -2330,7 +2346,7 @@ function Rename-ComputerMenu {
         Write-Host ""
         Write-Host "Invalid computer name!" -ForegroundColor $script:Colors.Error
         Write-Host "Please follow the naming requirements." -ForegroundColor $script:Colors.Error
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
         return
     }
     
@@ -2372,8 +2388,7 @@ function Rename-ComputerMenu {
         Write-Host "Failed to rename computer: $_" -ForegroundColor $script:Colors.Error
     }
     
-    Write-Host ""
-    Read-Host "Press Enter to continue"
+    Invoke-ReturnToMenu
 }
 
 #endregion
@@ -2482,8 +2497,7 @@ function Show-SystemInformation {
     }
     
     if ($exportChoice -ne '0') {
-        Write-Host ""
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
     }
 }
 
@@ -2548,8 +2562,7 @@ function Show-Documentation {
     }
     
     if ($choice -ne '0') {
-        Write-Host ""
-        Read-Host "Press Enter to continue"
+        Invoke-ReturnToMenu
     }
 }
 
