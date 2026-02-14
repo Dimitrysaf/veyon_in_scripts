@@ -1707,13 +1707,150 @@ function Apply-RestrictionWithFallback {
     return ($registrySuccess -or $fallbackSuccess)
 }
 
+function Get-NonAdminUserProfiles {
+    <#
+    .SYNOPSIS
+        Gets all non-admin user profiles on the computer.
+    .DESCRIPTION
+        Loads user profiles from registry excluding built-in and administrator accounts.
+    #>
+    
+    try {
+        $nonAdminUsers = @()
+        
+        # Get all user profile paths from registry
+        $profilePath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+        $profiles = Get-ChildItem -Path $profilePath -ErrorAction SilentlyContinue
+        
+        foreach ($profile in $profiles) {
+            $sid = $profile.PSChildName
+            
+            # Skip non-user SIDs (system, local service, network service, etc.)
+            if ($sid -notmatch '^S-1-5-21-') {
+                continue
+            }
+            
+            try {
+                # Try to get the username from the SID
+                $objSID = New-Object System.Security.Principal.SecurityIdentifier($sid)
+                $objUser = $objSID.Translate([System.Security.Principal.NTAccount])
+                $username = $objUser.Value -replace '^.*\\'  # Get just the username part
+                
+                # Get the user object to check if admin
+                $user = [ADSI]"WinNT://./$username,user"
+                $groups = $user.Groups() | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) }
+                
+                # Check if user is NOT in Administrators group
+                if ($groups -notcontains "Administrators") {
+                    $nonAdminUsers += @{
+                        Username = $username
+                        SID = $sid
+                        ProfilePath = (Get-ItemProperty -Path $profile.PSPath -Name "ProfilePath" -ErrorAction SilentlyContinue).ProfilePath
+                    }
+                    Write-Log "Found non-admin user: $username" -Level Info
+                }
+            } catch {
+                # Skip users we can't enumerate
+                Write-Log "Could not process user SID $sid : $_" -Level Warning
+            }
+        }
+        
+        return $nonAdminUsers
+    } catch {
+        Write-Log "Failed to enumerate user profiles: $_" -Level Error
+        return @()
+    }
+}
+
+function Apply-RestrictionToUserProfile {
+    <#
+    .SYNOPSIS
+        Applies a restriction to a specific user profile's registry hive.
+    .DESCRIPTION
+        Loads and modifies a user's NTUSER.DAT hive to apply restrictions.
+    #>
+    
+    param(
+        [string]$UserSID,
+        [string]$ProfilePath,
+        [hashtable]$Restriction
+    )
+    
+    try {
+        # Only handle HKCU restrictions (user-specific ones)
+        if (!$Restriction.RegPath -or $Restriction.RegPath -notmatch '^HKCU:') {
+            return $false
+        }
+        
+        # Load user hive if not already loaded
+        $hivePath = Join-Path $ProfilePath "NTUSER.DAT"
+        
+        if (!(Test-Path $hivePath)) {
+            Write-Log "User hive not found at $hivePath" -Level Warning
+            return $false
+        }
+        
+        # Use the loaded hive or load it temporarily
+        $tempHiveName = "TempUserHive_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+        $userName = Split-Path $ProfilePath -Leaf
+        
+        # Convert HKCU path to HKU path format
+        $regPath = $Restriction.RegPath -replace '^HKCU:', ($UserSID)
+        
+        try {
+            # Load the user hive
+            & reg load "HKU\$tempHiveName" "$hivePath" 2>&1 | Out-Null
+            
+            # Convert the registry path to use the loaded hive
+            $hivePath = "Registry::HKEY_USERS\$tempHiveName\" + ($regPath -replace "^.*?:\\", "")
+            
+            # Create the path if it doesn't exist
+            if (!(Test-Path $hivePath)) {
+                New-Item -Path $hivePath -Force -ErrorAction Stop | Out-Null
+            }
+            
+            # Apply the restriction
+            Set-ItemProperty -Path $hivePath -Name $Restriction.RegName -Value $Restriction.RegValue -Force -ErrorAction Stop
+            
+            Write-Log "Applied restriction to user $userName : $($Restriction.Name)" -Level Success
+            return $true
+            
+        } catch {
+            Write-Log "Failed to apply restriction to user hive: $_" -Level Warning
+            return $false
+        } finally {
+            # Unload the hive
+            Start-Sleep -Milliseconds 500
+            & reg unload "HKU\$tempHiveName" 2>&1 | Out-Null
+        }
+        
+    } catch {
+        Write-Log "Failed to process user profile: $_" -Level Error
+        return $false
+    }
+}
+
 function Set-UserRestrictions {
     Show-Header
     Write-Host "USER RESTRICTION SETTINGS" -ForegroundColor $script:Colors.Header
     Write-Host ""
     
+    # Check if running as admin
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($currentUser)
+    $isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    
+    if (!$isAdmin) {
+        Write-Host "WARNING: This script must be run as Administrator!" -ForegroundColor $script:Colors.Error
+        Write-Host "Please run as Administrator to apply restrictions to non-admin users." -ForegroundColor $script:Colors.Error
+        Read-Host "Press Enter to continue"
+        return
+    }
+    
     Write-Host "Apply restrictive settings to non-admin users?" -ForegroundColor $script:Colors.Warning
-    Write-Host "This will modify registry and Group Policy settings." -ForegroundColor $script:Colors.Warning
+    Write-Host "This will modify registry and Group Policy settings for non-admin user accounts." -ForegroundColor $script:Colors.Warning
+    Write-Host ""
+    Write-Host "NOTE: Admin user account will NOT be restricted." -ForegroundColor $script:Colors.Info
     Write-Host ""
     
     $confirm = Read-Host "Continue? (y/N)"
@@ -1813,6 +1950,27 @@ function Set-UserRestrictions {
     $successCount = 0
     $failureCount = 0
     
+    # Get non-admin user profiles for user-specific restrictions
+    $nonAdminUsers = @()
+    $hkuRestrictions = @($enabledRestrictions | Where-Object { $_.RegPath -match '^HKCU:' })
+    
+    if ($hkuRestrictions.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Scanning for non-admin user accounts..." -ForegroundColor $script:Colors.Info
+        $nonAdminUsers = Get-NonAdminUserProfiles
+        
+        if ($nonAdminUsers.Count -eq 0) {
+            Write-Host "No non-admin user profiles found on this computer." -ForegroundColor $script:Colors.Warning
+            Write-Host ""
+        } else {
+            Write-Host "Found $($nonAdminUsers.Count) non-admin user profile(s):" -ForegroundColor $script:Colors.Success
+            foreach ($user in $nonAdminUsers) {
+                Write-Host "  - $($user.Username)" -ForegroundColor $script:Colors.Info
+            }
+            Write-Host ""
+        }
+    }
+    
     try {
         foreach ($restriction in $enabledRestrictions) {
             $step++
@@ -1820,26 +1978,50 @@ function Set-UserRestrictions {
             Show-Progress -Activity "Applying Restrictions" -Status "[$step/$totalSteps] $($restriction.Name)" -PercentComplete $percent
             Start-Sleep -Milliseconds 300
             
-            # Apply restriction with registry primary method and Group Policy fallback
-            if ($restriction.Key -eq "Scripts") {
-                # Special handling for Script Execution
-                try {
-                    Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope CurrentUser -Force -ErrorAction Stop
-                    Write-Log "Applied restriction: $($restriction.Name) (Execution Policy)" -Level Success
-                    $successCount++
-                } catch {
-                    Write-Log "Failed to apply Script Execution restriction: $_" -Level Warning
-                    $failureCount++
+            # Check if this is a user-specific (HKCU) restriction
+            if ($restriction.RegPath -match '^HKCU:') {
+                # Apply to each non-admin user profile
+                if ($nonAdminUsers.Count -gt 0) {
+                    $restrictionAppliedCount = 0
+                    foreach ($user in $nonAdminUsers) {
+                        $applied = Apply-RestrictionToUserProfile -UserSID $user.SID -ProfilePath $user.ProfilePath -Restriction $restriction
+                        if ($applied) {
+                            $restrictionAppliedCount++
+                        }
+                    }
+                    
+                    if ($restrictionAppliedCount -gt 0) {
+                        Write-Log "Applied '$($restriction.Name)' to $restrictionAppliedCount non-admin user(s)" -Level Success
+                        $successCount++
+                    } else {
+                        Write-Log "Failed to apply '$($restriction.Name)' to any user profiles" -Level Warning
+                        $failureCount++
+                    }
+                } else {
+                    Write-Log "Skipped user-specific restriction '$($restriction.Name)' - no non-admin users found" -Level Warning
                 }
             } else {
-                # Use standard registry + Group Policy fallback for all other restrictions
-                $applied = Apply-RestrictionWithFallback -Restriction $restriction
-                if ($applied) {
-                    Write-Log "Applied restriction: $($restriction.Name)" -Level Success
-                    $successCount++
+                # HKLM restriction - apply system-wide
+                if ($restriction.Key -eq "Scripts") {
+                    # Special handling for Script Execution
+                    try {
+                        Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope CurrentUser -Force -ErrorAction Stop
+                        Write-Log "Applied restriction: $($restriction.Name) (Execution Policy)" -Level Success
+                        $successCount++
+                    } catch {
+                        Write-Log "Failed to apply Script Execution restriction: $_" -Level Warning
+                        $failureCount++
+                    }
                 } else {
-                    Write-Log "Failed to apply restriction: $($restriction.Name)" -Level Warning
-                    $failureCount++
+                    # Use standard registry + Group Policy fallback for all other restrictions
+                    $applied = Apply-RestrictionWithFallback -Restriction $restriction
+                    if ($applied) {
+                        Write-Log "Applied system-wide restriction: $($restriction.Name)" -Level Success
+                        $successCount++
+                    } else {
+                        Write-Log "Failed to apply system-wide restriction: $($restriction.Name)" -Level Warning
+                        $failureCount++
+                    }
                 }
             }
         }
@@ -1859,6 +2041,19 @@ function Set-UserRestrictions {
             Write-Host "Failed to apply:            $failureCount" -ForegroundColor $script:Colors.Warning
         }
         Write-Host ""
+        
+        # Show details about which users were affected
+        if ($nonAdminUsers.Count -gt 0) {
+            $userRestrictionCount = @($enabledRestrictions | Where-Object { $_.RegPath -match '^HKCU:' }).Count
+            if ($userRestrictionCount -gt 0) {
+                Write-Host "User-specific restrictions applied to:" -ForegroundColor $script:Colors.Info
+                foreach ($user in $nonAdminUsers) {
+                    Write-Host "  - $($user.Username)" -ForegroundColor $script:Colors.Info
+                }
+                Write-Host ""
+            }
+        }
+        
         Write-Host "Application methods used:" -ForegroundColor $script:Colors.Info
         Write-Host "  - Primary: Direct Registry Modification" -ForegroundColor $script:Colors.Info
         Write-Host "  - Fallback: Group Policy (if registry method fails)" -ForegroundColor $script:Colors.Info
