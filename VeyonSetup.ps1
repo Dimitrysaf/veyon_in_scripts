@@ -727,6 +727,160 @@ function Install-Veyon {
     Read-Host "Press Enter to continue"
 }
 
+function Uninstall-Veyon {
+    Show-Header
+    Write-Host "VEYON UNINSTALLATION" -ForegroundColor $script:Colors.Header
+    Write-Host ""
+    
+    # Check if Veyon is installed
+    if (!(Test-VeyonInstalled)) {
+        Write-Host "Veyon is not installed on this system." -ForegroundColor $script:Colors.Warning
+        Read-Host "Press Enter to continue"
+        return
+    }
+    
+    $currentVersion = try {
+        (Get-ItemProperty "C:\Program Files\Veyon\veyon-configurator.exe" -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+    } catch {
+        "Unknown"
+    }
+    
+    Write-Host "Current Veyon version: $currentVersion" -ForegroundColor $script:Colors.Info
+    Write-Host ""
+    Write-Host "WARNING: This will completely remove Veyon from this computer!" -ForegroundColor $script:Colors.Warning
+    Write-Host ""
+    Write-Host "The following will be removed:" -ForegroundColor $script:Colors.Header
+    Write-Host "  - Veyon application files" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Veyon Service" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Configuration files" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Authentication keys" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Log files" -ForegroundColor $script:Colors.Info
+    Write-Host ""
+    
+    $confirm = Read-Host "Are you sure you want to uninstall Veyon? (yes/N)"
+    if ($confirm -ne 'yes') {
+        Write-Host "Uninstallation cancelled." -ForegroundColor $script:Colors.Warning
+        Read-Host "Press Enter to continue"
+        return
+    }
+    
+    Write-Host ""
+    $clearConfig = Read-Host "Do you want to clear all configuration and data? (Y/n)"
+    $shouldClearConfig = ($clearConfig -ne 'n')
+    
+    try {
+        $uninstallerPath = "C:\Program Files\Veyon\uninstall.exe"
+        
+        if (!(Test-Path $uninstallerPath)) {
+            throw "Veyon uninstaller not found at: $uninstallerPath"
+        }
+        
+        Write-Host ""
+        Write-Host "Uninstalling Veyon..." -ForegroundColor $script:Colors.Info
+        Write-Log "Starting Veyon uninstallation"
+        
+        # Build uninstall arguments
+        $uninstallArgs = "/S"  # Silent mode
+        if ($shouldClearConfig) {
+            $uninstallArgs += " /ClearConfig"
+            Write-Log "Uninstalling with configuration clearing"
+        } else {
+            Write-Log "Uninstalling without clearing configuration"
+        }
+        
+        Show-Progress -Activity "Uninstalling Veyon" -Status "Stopping Veyon Service..." -PercentComplete 10
+        Start-Sleep -Milliseconds 500
+        
+        # Stop Veyon Service if running
+        try {
+            $service = Get-Service -Name "VeyonService" -ErrorAction SilentlyContinue
+            if ($service -and $service.Status -eq 'Running') {
+                Stop-Service -Name "VeyonService" -Force -ErrorAction SilentlyContinue
+                Write-Log "Stopped Veyon Service"
+            }
+        } catch {
+            Write-Log "Could not stop Veyon Service: $_" -Level Warning
+        }
+        
+        Show-Progress -Activity "Uninstalling Veyon" -Status "Running uninstaller..." -PercentComplete 30
+        Write-Log "Executing: $uninstallerPath $uninstallArgs"
+        
+        # Run uninstaller
+        $process = Start-Process -FilePath $uninstallerPath -ArgumentList $uninstallArgs -Wait -PassThru
+        
+        Show-Progress -Activity "Uninstalling Veyon" -Status "Removing files..." -PercentComplete 60
+        Start-Sleep -Milliseconds 500
+        
+        if ($process.ExitCode -ne 0) {
+            throw "Veyon uninstallation failed with exit code: $($process.ExitCode)"
+        }
+        
+        Show-Progress -Activity "Uninstalling Veyon" -Status "Cleaning up..." -PercentComplete 80
+        Start-Sleep -Milliseconds 500
+        
+        # Additional cleanup if requested
+        if ($shouldClearConfig) {
+            # Remove any remaining data directories
+            $dataPaths = @(
+                "C:\ProgramData\Veyon",
+                "$env:APPDATA\Veyon"
+            )
+            
+            foreach ($path in $dataPaths) {
+                if (Test-Path $path) {
+                    try {
+                        Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
+                        Write-Log "Removed: $path"
+                    } catch {
+                        Write-Log "Could not remove $path: $_" -Level Warning
+                    }
+                }
+            }
+        }
+        
+        Show-Progress -Activity "Uninstalling Veyon" -Status "Complete" -PercentComplete 100
+        Start-Sleep -Milliseconds 500
+        Write-Progress -Activity "Uninstalling Veyon" -Completed
+        
+        Write-Log "Veyon uninstalled successfully" -Level Success
+        
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host " Veyon uninstalled successfully!" -ForegroundColor $script:Colors.Success
+        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host ""
+        
+        if ($shouldClearConfig) {
+            Write-Host "All configuration and data has been removed." -ForegroundColor $script:Colors.Info
+        } else {
+            Write-Host "Configuration and keys were preserved." -ForegroundColor $script:Colors.Info
+        }
+        
+        Write-Host ""
+        
+        # Restart prompt
+        $restart = Read-Host "A system restart is recommended. Restart now? (y/N)"
+        if ($restart -eq 'y') {
+            Write-Log "Initiating system restart after uninstallation"
+            Write-Host "Restarting in 5 seconds..." -ForegroundColor $script:Colors.Warning
+            Start-Sleep -Seconds 5
+            Restart-Computer -Force
+        } else {
+            Write-Host ""
+            Write-Host "Note: Please restart the computer later to complete the uninstallation." -ForegroundColor $script:Colors.Warning
+        }
+        
+    } catch {
+        Write-Log "Uninstallation failed: $_" -Level Error
+        Write-Host ""
+        Write-Host "Uninstallation failed: $_" -ForegroundColor $script:Colors.Error
+        Write-Host ""
+    }
+    
+    Write-Host ""
+    Read-Host "Press Enter to continue"
+}
+
 function Set-VeyonConfiguration {
     Show-Header
     Write-Host "VEYON CONFIGURATION" -ForegroundColor $script:Colors.Header
@@ -1233,10 +1387,11 @@ function Show-MainMenu {
     Write-Host ""
     Write-Host "  [1] System Information" -ForegroundColor $script:Colors.Info
     Write-Host "  [2] Install Veyon" -ForegroundColor $script:Colors.Info
-    Write-Host "  [3] Configure Veyon" -ForegroundColor $script:Colors.Info
-    Write-Host "  [4] User Restrictions" -ForegroundColor $script:Colors.Info
-    Write-Host "  [5] Rename Computer" -ForegroundColor $script:Colors.Info
-    Write-Host "  [6] Documentation & Help" -ForegroundColor $script:Colors.Info
+    Write-Host "  [3] Uninstall Veyon" -ForegroundColor $script:Colors.Info
+    Write-Host "  [4] Configure Veyon" -ForegroundColor $script:Colors.Info
+    Write-Host "  [5] User Restrictions" -ForegroundColor $script:Colors.Info
+    Write-Host "  [6] Rename Computer" -ForegroundColor $script:Colors.Info
+    Write-Host "  [7] Documentation & Help" -ForegroundColor $script:Colors.Info
     Write-Host "  [0] Exit" -ForegroundColor $script:Colors.Warning
     Write-Host ""
     
@@ -1245,10 +1400,11 @@ function Show-MainMenu {
     switch ($choice) {
         '1' { Show-SystemInformation }
         '2' { Install-Veyon }
-        '3' { Set-VeyonConfiguration }
-        '4' { Set-UserRestrictions }
-        '5' { Rename-ComputerMenu }
-        '6' { Show-Documentation }
+        '3' { Uninstall-Veyon }
+        '4' { Set-VeyonConfiguration }
+        '5' { Set-UserRestrictions }
+        '6' { Rename-ComputerMenu }
+        '7' { Show-Documentation }
         '0' { 
             Write-Host ""
             Write-Host "Thank you for using Veyon Installation Tool!" -ForegroundColor $script:Colors.Info
@@ -1425,6 +1581,10 @@ function Main {
                     Install-Veyon
                 }
             }
+            'uninstall' {
+                Write-Log "CLI mode: uninstall"
+                Uninstall-Veyon
+            }
             'info' { 
                 Write-Log "CLI mode: info"
                 $info = Get-SystemInfo
@@ -1480,6 +1640,7 @@ Commands:
   install [mode]       Install Veyon (mode: teacher or student)
                        - teacher: Installs Master + Service (with key export)
                        - student: Installs Service only (NO Master)
+  uninstall            Uninstall Veyon completely
   info                 Display system information
   export [format]      Export system info (JSON, CSV, TXT)
   rename <name>        Rename computer (add -restart to restart automatically)
@@ -1489,7 +1650,7 @@ Commands:
 Examples:
   .\VeyonSetup.ps1 install teacher
   .\VeyonSetup.ps1 install student
-  .\VeyonSetup.ps1 install
+  .\VeyonSetup.ps1 uninstall
   .\VeyonSetup.ps1 info
   .\VeyonSetup.ps1 export JSON
   .\VeyonSetup.ps1 rename LAB-PC-01
