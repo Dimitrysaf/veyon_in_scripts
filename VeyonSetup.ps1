@@ -38,6 +38,9 @@ $script:Colors = @{
     Prompt = 'Magenta'
 }
 
+# Reusable separator line (80 characters)
+$script:Line80 = (-join (1..80 | ForEach-Object { '=' }))
+
 #region Helper Functions
 
 function Write-Log {
@@ -70,9 +73,9 @@ function Write-Log {
 
 function Show-Header {
     Clear-Host
-    Write-Host "=" * 80 -ForegroundColor $script:Colors.Header
+    Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
     Write-Host " VEYON INSTALLATION & CONFIGURATION TOOL v2.0" -ForegroundColor $script:Colors.Header
-    Write-Host "=" * 80 -ForegroundColor $script:Colors.Header
+    Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
     Write-Host ""
 }
 
@@ -213,7 +216,7 @@ function Export-SystemInfo {
             $output = @"
 SYSTEM INFORMATION REPORT
 Generated: $($SystemInfo.Timestamp)
-================================================
+$script:Line80
 
 Computer Name: $($SystemInfo.ComputerName)
 Domain: $($SystemInfo.Domain)
@@ -572,28 +575,20 @@ function Install-Veyon {
         # FOR TEACHER MODE: Export authentication keys to PWD
         if ($isTeacher) {
             Write-Host ""
-            Write-Host "========================================" -ForegroundColor $script:Colors.Header
+            Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
             Write-Host " TEACHER MODE: Exporting Keys" -ForegroundColor $script:Colors.Header
-            Write-Host "========================================" -ForegroundColor $script:Colors.Header
+            Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
             Write-Host ""
             
             $keysSourcePath = "C:\ProgramData\Veyon\keys"
             $keysDestPath = Join-Path $PWD "keys"
-            
-            if (Test-Path $keysSourcePath) {
-                try {
-                    Show-Progress -Activity "Exporting Keys" -Status "Copying authentication keys to script directory..." -PercentComplete 50
-                    
-                    Write-Host "Copying authentication keys to: $keysDestPath" -ForegroundColor $script:Colors.Info
-                    
-                    # Copy entire keys folder to PWD
-                    Copy-Item -Path $keysSourcePath -Destination $keysDestPath -Recurse -Force
-                    
-                    Show-Progress -Activity "Exporting Keys" -Status "Complete" -PercentComplete 100
-                    Start-Sleep -Milliseconds 300
-                    Write-Progress -Activity "Exporting Keys" -Completed
-                    
-                    Write-Host ""
+
+            # Ensure keys exist; if not, attempt to generate and export them automatically
+            try {
+                $generatedOrPresent = Ensure-TeacherKeys -KeyName 'supervisor' -ExportPath $keysDestPath
+
+                if ($generatedOrPresent -and (Test-Path $keysDestPath)) {
+                    Write-Host "" 
                     Write-Host "Authentication keys exported successfully!" -ForegroundColor $script:Colors.Success
                     Write-Host "Location: $keysDestPath" -ForegroundColor $script:Colors.Success
                     Write-Host ""
@@ -601,24 +596,24 @@ function Install-Veyon {
                     Write-Host "Place it in the same directory as the VeyonSetup.ps1 script on student computers." -ForegroundColor $script:Colors.Warning
                     Write-Host ""
                     Write-Log "Teacher keys exported to: $keysDestPath" -Level Success
-                    
-                } catch {
-                    Write-Log "Failed to export keys: $_" -Level Error
-                    Write-Host "Warning: Could not export keys: $_" -ForegroundColor $script:Colors.Warning
-                    Write-Host "You can manually copy keys from: $keysSourcePath" -ForegroundColor $script:Colors.Info
+                } else {
+                    Write-Host "Note: No keys found and automatic generation/export failed." -ForegroundColor $script:Colors.Warning
+                    Write-Host "You can manually generate keys using the Configuration menu or copy keys from another teacher." -ForegroundColor $script:Colors.Info
+                    Write-Host "Keys would normally be at: $keysSourcePath" -ForegroundColor $script:Colors.Info
                 }
-            } else {
-                Write-Host "Note: No keys found yet. Generate keys using Configuration menu." -ForegroundColor $script:Colors.Warning
-                Write-Host "Keys will be available at: $keysSourcePath" -ForegroundColor $script:Colors.Info
+            } catch {
+                Write-Log "Failed while ensuring/exporting keys: $_" -Level Error
+                Write-Host "Warning: Could not export keys: $_" -ForegroundColor $script:Colors.Warning
+                Write-Host "You can manually copy keys from: $keysSourcePath" -ForegroundColor $script:Colors.Info
             }
         }
         
         # FOR STUDENT MODE: Import authentication keys from PWD
         if (-not $isTeacher) {
             Write-Host ""
-            Write-Host "========================================" -ForegroundColor $script:Colors.Header
+            Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
             Write-Host " STUDENT MODE: Importing Keys" -ForegroundColor $script:Colors.Header
-            Write-Host "========================================" -ForegroundColor $script:Colors.Header
+            Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
             Write-Host ""
             
             $keysSourcePath = Join-Path $PWD "keys"
@@ -699,10 +694,17 @@ function Install-Veyon {
         }
         
         Write-Host ""
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host " Veyon $($releaseInfo.Version) installed successfully!" -ForegroundColor $script:Colors.Success
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host ""
+        
+        # FOR TEACHER MODE: Pin Veyon Master to taskbar
+        if ($isTeacher) {
+            Write-Host "Configuring Veyon Master..." -ForegroundColor $script:Colors.Info
+            Pin-VeyonMasterToTaskbar
+            Write-Host ""
+        }
         
         # Restart prompt
         $restart = Read-Host "A system restart is recommended. Restart now? (y/N)"
@@ -847,9 +849,9 @@ function Uninstall-Veyon {
         Write-Log "Veyon uninstalled successfully" -Level Success
         
         Write-Host ""
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host " Veyon uninstalled successfully!" -ForegroundColor $script:Colors.Success
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host ""
         
         if ($shouldClearConfig) {
@@ -922,65 +924,212 @@ function New-VeyonAuthenticationKeys {
     Write-Host "GENERATE AUTHENTICATION KEYS" -ForegroundColor $script:Colors.Header
     Write-Host ""
     
-    $keyName = Read-Host "Enter key name (default: teacher)"
+    Write-Host "This will generate a new RSA key pair for authentication." -ForegroundColor $script:Colors.Info
+    Write-Host ""
+    
+    $keyName = Read-Host "Enter key name (default: supervisor)"
     if ([string]::IsNullOrWhiteSpace($keyName)) {
-        $keyName = "teacher"
+        $keyName = "supervisor"
     }
     
     try {
-        Show-Progress -Activity "Generating Keys" -Status "Preparing directories..." -PercentComplete 20
-        
-        # Create keys directory
-        $publicKeyDir = Join-Path $script:Config.KeysBasePath "public\$keyName"
-        $privateKeyDir = Join-Path $script:Config.KeysBasePath "private\$keyName"
-        
-        New-Item -ItemType Directory -Path $publicKeyDir -Force | Out-Null
-        New-Item -ItemType Directory -Path $privateKeyDir -Force | Out-Null
-        
-        Show-Progress -Activity "Generating Keys" -Status "Generating RSA key pair..." -PercentComplete 50
-        Start-Sleep -Milliseconds 500
-        
-        # Generate keys using Veyon CLI
+        # Verify Veyon CLI exists
         $veyonCLI = "C:\Program Files\Veyon\veyon-cli.exe"
         
         if (!(Test-Path $veyonCLI)) {
-            throw "Veyon CLI not found at: $veyonCLI"
+            throw "Veyon CLI not found at: $veyonCLI. Please ensure Veyon is installed correctly."
         }
         
-        Show-Progress -Activity "Generating Keys" -Status "Creating authentication keys..." -PercentComplete 70
-        $result = & $veyonCLI authkeys create $keyName 2>&1
+        Show-Progress -Activity "Generating Keys" -Status "Preparing directories..." -PercentComplete 20
         
-        if ($LASTEXITCODE -ne 0) {
-            throw "Key generation failed: $result"
+        Write-Host "Generating authentication keys..." -ForegroundColor $script:Colors.Info
+        Write-Log "Generating keys with name: $keyName"
+        
+        Show-Progress -Activity "Generating Keys" -Status "Creating RSA key pair..." -PercentComplete 50
+        
+        # Generate keys using Veyon CLI
+        $output = & $veyonCLI authkeys create $keyName 2>&1
+        $exitCode = $LASTEXITCODE
+        
+        Write-Log "Veyon CLI output: $output"
+        Write-Log "Veyon CLI exit code: $exitCode"
+        
+        if ($exitCode -ne 0) {
+            throw "Key generation failed with exit code $exitCode. Output: $output"
         }
         
-        Show-Progress -Activity "Generating Keys" -Status "Finalizing..." -PercentComplete 90
-        Start-Sleep -Milliseconds 300
+        Show-Progress -Activity "Generating Keys" -Status "Verifying key files..." -PercentComplete 70
+        Start-Sleep -Milliseconds 500
+        
+        # Verify keys were created
+        $publicKeyPath = Join-Path $script:Config.KeysBasePath "public\$keyName"
+        $privateKeyPath = Join-Path $script:Config.KeysBasePath "private\$keyName"
+        
+        $publicKeyFile = Get-ChildItem -Path $publicKeyPath -Filter "*.pem" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $privateKeyFile = Get-ChildItem -Path $privateKeyPath -Filter "*.pem" -ErrorAction SilentlyContinue | Select-Object -First 1
+        
+        if (!$publicKeyFile -or !$privateKeyFile) {
+            throw "Key files were not created. Please check Veyon installation."
+        }
         
         Show-Progress -Activity "Generating Keys" -Status "Complete" -PercentComplete 100
         Start-Sleep -Milliseconds 500
         Write-Progress -Activity "Generating Keys" -Completed
         
-        Write-Log "Authentication keys generated: $keyName" -Level Success
+        Write-Log "Authentication keys generated successfully: $keyName" -Level Success
         Write-Host ""
-        Write-Host "Authentication keys generated successfully!" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
+        Write-Host " Authentication keys generated!" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host ""
-        Write-Host "Public key:  $publicKeyDir" -ForegroundColor $script:Colors.Info
-        Write-Host "Private key: $privateKeyDir" -ForegroundColor $script:Colors.Info
+        Write-Host "Key name: $keyName" -ForegroundColor $script:Colors.Info
+        Write-Host ""
+        Write-Host "Public key location:" -ForegroundColor $script:Colors.Header
+        Write-Host "  $($publicKeyFile.FullName)" -ForegroundColor $script:Colors.Info
+        Write-Host ""
+        Write-Host "Private key location:" -ForegroundColor $script:Colors.Header
+        Write-Host "  $($privateKeyFile.FullName)" -ForegroundColor $script:Colors.Info
         Write-Host ""
         Write-Host "Next steps:" -ForegroundColor $script:Colors.Header
-        Write-Host "1. Keep the private key secure on this master computer" -ForegroundColor $script:Colors.Info
-        Write-Host "2. Distribute the public key to all client computers" -ForegroundColor $script:Colors.Info
+        Write-Host "  1. The private key stays on THIS computer (teacher/master)" -ForegroundColor $script:Colors.Info
+        Write-Host "  2. Copy the PUBLIC key to all student computers" -ForegroundColor $script:Colors.Info
+        Write-Host "  3. Use 'Export Configuration' to save the complete setup" -ForegroundColor $script:Colors.Info
         Write-Host ""
         
+        # Offer to export keys to PWD
+        $exportKeys = Read-Host "Export keys to script directory for distribution? (Y/n)"
+        if ($exportKeys -ne 'n') {
+            try {
+                $keysDestPath = Join-Path $PWD "keys"
+                
+                if (!(Test-Path $keysDestPath)) {
+                    New-Item -ItemType Directory -Path $keysDestPath -Force | Out-Null
+                }
+                
+                # Copy entire keys folder structure
+                Copy-Item -Path $script:Config.KeysBasePath\* -Destination $keysDestPath -Recurse -Force
+                
+                Write-Host ""
+                Write-Host "Keys exported to: $keysDestPath" -ForegroundColor $script:Colors.Success
+                Write-Host "You can now copy this folder to student computers." -ForegroundColor $script:Colors.Info
+                Write-Log "Keys exported to PWD: $keysDestPath" -Level Success
+            } catch {
+                $errorMsg = $_.Exception.Message
+                Write-Host "Failed to export keys: $errorMsg" -ForegroundColor $script:Colors.Warning
+                Write-Log "Failed to export keys to PWD: $errorMsg" -Level Warning
+            }
+        }
+        
     } catch {
-        Write-Log "Key generation failed: $_" -Level Error
+        $errorMsg = $_.Exception.Message
+        Write-Log "Key generation failed: $errorMsg" -Level Error
         Write-Host ""
-        Write-Host "Key generation failed: $_" -ForegroundColor $script:Colors.Error
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Error
+        Write-Host " Key generation failed!" -ForegroundColor $script:Colors.Error
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Error
+        Write-Host ""
+        Write-Host "Error: $errorMsg" -ForegroundColor $script:Colors.Error
+        Write-Host ""
+        Write-Host "Troubleshooting:" -ForegroundColor $script:Colors.Header
+        Write-Host "  1. Ensure Veyon is installed correctly" -ForegroundColor $script:Colors.Info
+        Write-Host "  2. Check that you have administrator privileges" -ForegroundColor $script:Colors.Info
+        Write-Host "  3. Verify Veyon Service is running" -ForegroundColor $script:Colors.Info
         Write-Host ""
     }
     
     Read-Host "Press Enter to continue"
+}
+
+function Ensure-TeacherKeys {
+    param(
+        [string]$KeyName = 'supervisor',
+        [string]$ExportPath = $null
+    )
+
+    $keysSourcePath = $script:Config.KeysBasePath
+    $veyonCLI = "C:\Program Files\Veyon\veyon-cli.exe"
+
+    try {
+        # If keys already exist, optionally export them
+        if (Test-Path $keysSourcePath) {
+            if ($ExportPath) {
+                if (!(Test-Path $ExportPath)) { New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null }
+                Copy-Item -Path $keysSourcePath -Destination $ExportPath -Recurse -Force
+                Write-Log "Supervisor keys copied to: $ExportPath" -Level Success
+            }
+            return $true
+        }
+
+        # Ensure Veyon CLI exists
+        if (!(Test-Path $veyonCLI)) {
+            Write-Log "Veyon CLI not found at: $veyonCLI. Cannot generate keys." -Level Error
+            return $false
+        }
+
+        Write-Log "No supervisor keys found, attempting to generate keys using Veyon CLI"
+        $output = & $veyonCLI authkeys create $KeyName 2>&1
+        $exitCode = $LASTEXITCODE
+        Write-Log "Veyon CLI authkeys output: $output"
+
+        if ($exitCode -ne 0) {
+            Write-Log "Key generation failed with exit code $exitCode" -Level Error
+            return $false
+        }
+
+        Start-Sleep -Seconds 1
+
+        if (Test-Path $keysSourcePath) {
+            if ($ExportPath) {
+                if (!(Test-Path $ExportPath)) { New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null }
+                Copy-Item -Path $keysSourcePath -Destination $ExportPath -Recurse -Force
+                Write-Log "Generated supervisor keys exported to: $ExportPath" -Level Success
+            }
+            return $true
+        } else {
+            Write-Log "Supervisor keys not found after generation attempt" -Level Warning
+            return $false
+        }
+
+    } catch {
+        Write-Log "Ensure-TeacherKeys failed: $_" -Level Error
+        return $false
+    }
+}
+
+function Pin-VeyonMasterToTaskbar {
+    try {
+        $veyonMasterPath = "C:\Program Files\Veyon\veyon-master.exe"
+        
+        if (!(Test-Path $veyonMasterPath)) {
+            Write-Log "Veyon Master not found at: $veyonMasterPath. Cannot pin to taskbar." -Level Warning
+            return $false
+        }
+        
+        # Use Windows Shell object to pin to taskbar
+        $shell = New-Object -ComObject "Shell.Application"
+        $folder = $shell.Namespace((Split-Path $veyonMasterPath))
+        $file = $folder.ParseName((Split-Path $veyonMasterPath -Leaf))
+        
+        # Pin to taskbar verb ID = "pintohome" for older Windows or "pintotaskbar" 
+        $verbs = $file.Verbs()
+        foreach ($verb in $verbs) {
+            if ($verb.Name -match "Pin to Taskbar|Pin to Start") {
+                $verb.DoIt()
+                Write-Log "Pinned Veyon Master to taskbar" -Level Success
+                Write-Host "Veyon Master has been pinned to the taskbar." -ForegroundColor $script:Colors.Success
+                return $true
+            }
+        }
+        
+        Write-Log "Pin to Taskbar verb not found in context menu" -Level Warning
+        Write-Host "Note: Could not pin Veyon Master to taskbar automatically." -ForegroundColor $script:Colors.Warning
+        return $false
+        
+    } catch {
+        Write-Log "Failed to pin Veyon Master to taskbar: $_" -Level Error
+        Write-Host "Note: Could not pin Veyon Master to taskbar: $_" -ForegroundColor $script:Colors.Warning
+        return $false
+    }
 }
 
 function Set-VeyonNetworkSettings {
@@ -1272,9 +1421,9 @@ function Set-UserRestrictions {
         Write-Progress -Activity "Applying Restrictions" -Completed
         
         Write-Host ""
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host " $($enabledRestrictions.Count) restriction(s) applied successfully!" -ForegroundColor $script:Colors.Success
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host ""
         Write-Host "Note: Some restrictions require a logoff/restart to take effect." -ForegroundColor $script:Colors.Warning
         
@@ -1335,9 +1484,9 @@ function Rename-ComputerMenu {
         Write-Log "Computer renamed from $currentName to $newName" -Level Success
         
         Write-Host ""
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host " Computer renamed successfully!" -ForegroundColor $script:Colors.Success
-        Write-Host "========================================" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
         Write-Host ""
         Write-Host "Old name: $currentName" -ForegroundColor $script:Colors.Info
         Write-Host "New name: $newName" -ForegroundColor $script:Colors.Info
@@ -1631,15 +1780,15 @@ function Main {
                 Write-Host "Download URL: $($release.DownloadUrl)" -ForegroundColor $script:Colors.Info
             }
             'help' {
-                Write-Host @"
+                                Write-Host @"
 
 Veyon Installation & Configuration Tool v2.0 - CLI Help
-========================================================
+$script:Line80
 
 Usage: .\VeyonSetup.ps1 [command] [arguments]
 
 Commands:
-  install [mode]       Install Veyon (mode: teacher or student)
+    install [mode]       Install Veyon (mode: teacher or student)
                        - teacher: Installs Master + Service (with key export)
                        - student: Installs Service only (NO Master)
   uninstall            Uninstall Veyon completely
