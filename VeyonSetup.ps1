@@ -347,6 +347,160 @@ function Get-LatestVeyonRelease {
     }
 }
 
+function Add-VeyonFirewallRules {
+    try {
+        Write-Log "Configuring Windows Firewall for Veyon..."
+        
+        # Veyon standard ports
+        $ports = @(
+            @{ Port = 5900; Name = "Veyon VNC" },
+            @{ Port = 5901; Name = "Veyon VNC Alt" },
+            @{ Port = 11400; Name = "Veyon Service" }
+        )
+        
+        $rulesAdded = 0
+        
+        foreach ($portInfo in $ports) {
+            $ruleName = "Veyon - $($portInfo.Name) (Port $($portInfo.Port))"
+            
+            # Check if rule already exists
+            $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+            
+            if ($existingRule) {
+                Write-Log "Firewall rule already exists: $ruleName"
+            } else {
+                try {
+                    New-NetFirewallRule -DisplayName $ruleName `
+                        -Direction Inbound `
+                        -Action Allow `
+                        -Protocol TCP `
+                        -LocalPort $portInfo.Port `
+                        -ErrorAction Stop | Out-Null
+                    
+                    Write-Log "Added firewall rule: $ruleName"
+                    $rulesAdded++
+                } catch {
+                    Write-Log "Failed to add firewall rule for port $($portInfo.Port): $_" -Level Warning
+                }
+            }
+        }
+        
+        if ($rulesAdded -gt 0) {
+            Write-Host "Firewall rules configured ($rulesAdded new rules added)." -ForegroundColor $script:Colors.Success
+        } else {
+            Write-Host "Firewall rules already configured or no changes needed." -ForegroundColor $script:Colors.Info
+        }
+        
+        return $true
+        
+    } catch {
+        Write-Log "Failed to configure firewall rules: $_" -Level Warning
+        Write-Host "Warning: Could not configure firewall rules. Veyon may not be accessible over network." -ForegroundColor $script:Colors.Warning
+        return $false
+    }
+}
+
+function Check-VeyonService {
+    try {
+        Write-Log "Checking Veyon Service health..."
+        
+        $service = Get-Service -Name "VeyonService" -ErrorAction SilentlyContinue
+        
+        if ($null -eq $service) {
+            Write-Log "Veyon Service not found on system" -Level Warning
+            Write-Host "Warning: Veyon Service not found." -ForegroundColor $script:Colors.Warning
+            return $false
+        }
+        
+        if ($service.Status -eq 'Running') {
+            Write-Log "Veyon Service is running"
+            Write-Host "Veyon Service is running." -ForegroundColor $script:Colors.Success
+            return $true
+        } else {
+            Write-Log "Veyon Service is not running. Attempting to start..."
+            Write-Host "Starting Veyon Service..." -ForegroundColor $script:Colors.Info
+            
+            try {
+                Start-Service -Name "VeyonService" -ErrorAction Stop
+                Start-Sleep -Seconds 2
+                
+                $service = Get-Service -Name "VeyonService"
+                if ($service.Status -eq 'Running') {
+                    Write-Log "Veyon Service started successfully" -Level Success
+                    Write-Host "Veyon Service started successfully." -ForegroundColor $script:Colors.Success
+                    return $true
+                } else {
+                    Write-Log "Failed: Veyon Service did not start" -Level Error
+                    Write-Host "Failed: Veyon Service did not start." -ForegroundColor $script:Colors.Error
+                    return $false
+                }
+            } catch {
+                Write-Log "Failed to start Veyon Service: $_" -Level Error
+                Write-Host "Error: Could not start Veyon Service: $_" -ForegroundColor $script:Colors.Error
+                return $false
+            }
+        }
+    } catch {
+        Write-Log "Error checking Veyon Service: $_" -Level Error
+        return $false
+    }
+}
+
+function Export-ComputerToRegistry {
+    param(
+        [string]$OutputPath = $PWD
+    )
+    
+    try {
+        $registryFile = Join-Path $OutputPath "computer_registry.json"
+        
+        # Reuse Get-SystemInfo to gather system information (DRY principle)
+        $systemInfo = Get-SystemInfo
+        
+        # Enhance with installation status
+        $computerInfo = $systemInfo.Clone()
+        $computerInfo.InstallationStatus = if ($systemInfo.VeyonInstalled) { "Success" } else { "Failed" }
+        
+        # Read existing registry if it exists
+        $registry = @()
+        if (Test-Path $registryFile) {
+            try {
+                $registry = Get-Content $registryFile -Raw | ConvertFrom-Json
+                if ($registry -isnot [System.Collections.Generic.List[object]]) {
+                    $registry = @($registry)
+                }
+            } catch {
+                Write-Log "Could not read existing registry, starting fresh" -Level Warning
+                $registry = @()
+            }
+        }
+        
+        # Add new computer entry (or update if same computer name exists)
+        $existingIndex = $registry.FindIndex({ param($item) $item.ComputerName -eq $computerInfo.ComputerName })
+        
+        if ($existingIndex -ge 0) {
+            $registry[$existingIndex] = $computerInfo
+            Write-Log "Updated existing computer entry: $($computerInfo.ComputerName)"
+        } else {
+            $registry += $computerInfo
+            Write-Log "Added new computer entry: $($computerInfo.ComputerName)"
+        }
+        
+        # Write registry back to file
+        $registry | ConvertTo-Json -Depth 10 | Out-File $registryFile -Encoding UTF8 -Force
+        
+        Write-Host "Computer information saved to: $registryFile" -ForegroundColor $script:Colors.Success
+        Write-Log "Computer registry updated: $registryFile" -Level Success
+        
+        return $true
+        
+    } catch {
+        Write-Log "Failed to export computer info to registry: $_" -Level Error
+        Write-Host "Warning: Could not save computer information: $_" -ForegroundColor $script:Colors.Warning
+        return $false
+    }
+}
+
 #endregion
 
 #region Veyon Installation Functions
@@ -704,6 +858,93 @@ function Install-Veyon {
             Write-Host "Configuring Veyon Master..." -ForegroundColor $script:Colors.Info
             Pin-VeyonMasterToTaskbar
             Write-Host ""
+        }
+        
+        # Configure Windows Firewall for Veyon
+        Write-Host ""
+        Write-Host "Configuring firewall rules..." -ForegroundColor $script:Colors.Info
+        Add-VeyonFirewallRules
+        Write-Host ""
+        
+        # Check Veyon Service health
+        Write-Host "Verifying Veyon Service..." -ForegroundColor $script:Colors.Info
+        Check-VeyonService
+        Write-Host ""
+        
+        # Export computer information to registry
+        Write-Host "Recording computer information..." -ForegroundColor $script:Colors.Info
+        Export-ComputerToRegistry -OutputPath $PWD
+        Write-Host ""
+        
+        # FOR STUDENT MODE: Apply restrictions from restrictions.ini if it exists
+        if (-not $isTeacher) {
+            $iniPath = Join-Path $PWD "restrictions.ini"
+            if (Test-Path $iniPath) {
+                Write-Host ""
+                Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
+                Write-Host " STUDENT MODE: Applying Restrictions" -ForegroundColor $script:Colors.Header
+                Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
+                Write-Host ""
+                
+                $restrictions = Load-RestrictionsFromINI -InputPath $PWD
+                if ($restrictions) {
+                    $enabledRestrictions = $restrictions | Where-Object { $_.Enabled }
+                    
+                    if ($enabledRestrictions.Count -gt 0) {
+                        Write-Host "Applying $($enabledRestrictions.Count) restriction(s) from restrictions.ini..." -ForegroundColor $script:Colors.Info
+                        
+                        $step = 0
+                        $totalSteps = $enabledRestrictions.Count
+                        
+                        try {
+                            foreach ($restriction in $enabledRestrictions) {
+                                $step++
+                                $percent = [int](($step / $totalSteps) * 100)
+                                Show-Progress -Activity "Applying Restrictions" -Status "[$step/$totalSteps] $($restriction.Name)" -PercentComplete $percent
+                                Start-Sleep -Milliseconds 200
+                                
+                                switch ($restriction.Key) {
+                                    "AutoUpdate" {
+                                        New-Item -Path $restriction.RegPath -Force -ErrorAction SilentlyContinue | Out-Null
+                                        Set-ItemProperty -Path $restriction.RegPath -Name $restriction.RegName -Value $restriction.RegValue -Force
+                                    }
+                                    "Background" {
+                                        New-Item -Path $restriction.RegPath -Force -ErrorAction SilentlyContinue | Out-Null
+                                        Set-ItemProperty -Path $restriction.RegPath -Name $restriction.RegName -Value $restriction.RegValue -Force
+                                    }
+                                    "PCName" {
+                                        New-Item -Path $restriction.RegPath -Force -ErrorAction SilentlyContinue | Out-Null
+                                        Set-ItemProperty -Path $restriction.RegPath -Name $restriction.RegName -Value $restriction.RegValue -Force
+                                    }
+                                    "Scripts" {
+                                        Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope CurrentUser -Force -ErrorAction SilentlyContinue
+                                    }
+                                    default {
+                                        if ($restriction.RegPath) {
+                                            New-Item -Path $restriction.RegPath -Force -ErrorAction SilentlyContinue | Out-Null
+                                            Set-ItemProperty -Path $restriction.RegPath -Name $restriction.RegName -Value $restriction.RegValue -Force
+                                        }
+                                    }
+                                }
+                                
+                                Write-Log "Applied restriction: $($restriction.Name)" -Level Success
+                            }
+                            
+                            Show-Progress -Activity "Applying Restrictions" -Status "Complete" -PercentComplete 100
+                            Start-Sleep -Milliseconds 300
+                            Write-Progress -Activity "Applying Restrictions" -Completed
+                            
+                            Write-Host ""
+                            Write-Host "Restrictions applied successfully!" -ForegroundColor $script:Colors.Success
+                            Write-Log "Applied $($enabledRestrictions.Count) restriction(s) during installation" -Level Success
+                        } catch {
+                            Write-Log "Failed to apply restrictions during installation: $_" -Level Error
+                            Write-Host "Warning: Some restrictions could not be applied: $_" -ForegroundColor $script:Colors.Warning
+                        }
+                    }
+                }
+                Write-Host ""
+            }
         }
         
         # Restart prompt
@@ -1273,13 +1514,206 @@ function Import-VeyonConfiguration {
 
 #region User Restriction Functions
 
+function Get-RestrictionDefinitions {
+    return @(
+        @{ Name = "Disable Automatic Updates"; Enabled = $false; Key = "AutoUpdate"; RegPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"; RegName = "NoAutoUpdate"; RegValue = 1 },
+        @{ Name = "Disable Background Change"; Enabled = $false; Key = "Background"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop"; RegName = "NoChangingWallPaper"; RegValue = 1 },
+        @{ Name = "Disable PC Name Change"; Enabled = $false; Key = "PCName"; RegPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System"; RegName = "DontDisplayNetworkSelectionUI"; RegValue = 1 },
+        @{ Name = "Disable Script Execution"; Enabled = $false; Key = "Scripts"; RegPath = $null; RegName = $null; RegValue = $null },
+        @{ Name = "Disable Control Panel Access"; Enabled = $false; Key = "ControlPanel"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"; RegName = "NoControlPanel"; RegValue = 1 },
+        @{ Name = "Disable Registry Editor"; Enabled = $false; Key = "RegEdit"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; RegName = "DisableRegistryTools"; RegValue = 1 },
+        @{ Name = "Disable Task Manager"; Enabled = $false; Key = "TaskMgr"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; RegName = "DisableTaskMgr"; RegValue = 1 },
+        @{ Name = "Disable Command Prompt"; Enabled = $false; Key = "CMD"; RegPath = "HKCU:\SOFTWARE\Policies\Microsoft\Windows\System"; RegName = "DisableCMD"; RegValue = 1 },
+        @{ Name = "Disable Windows Settings"; Enabled = $false; Key = "Settings"; RegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"; RegName = "SettingsPageVisibility"; RegValue = "hide:windowsupdate" },
+        @{ Name = "Hide System Drive in Explorer"; Enabled = $false; Key = "CDrive"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"; RegName = "NoDrives"; RegValue = 4 },
+        @{ Name = "Disable USB Removable Media"; Enabled = $false; Key = "USB"; RegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\USBSTOR"; RegName = "Start"; RegValue = 4 },
+        @{ Name = "Disable Password Change (User)"; Enabled = $false; Key = "PassChange"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; RegName = "DisableChangePassword"; RegValue = 1 },
+        @{ Name = "Disable Printer Installation"; Enabled = $false; Key = "Printers"; RegPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers"; RegName = "DisablePrinterRedirection"; RegValue = 1 },
+        @{ Name = "Disable File Sharing"; Enabled = $false; Key = "FileShare"; RegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"; RegName = "AutoShareWk"; RegValue = 0 },
+        @{ Name = "Disable Run from Start Menu"; Enabled = $false; Key = "RunMenu"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"; RegName = "NoRun"; RegValue = 1 },
+        @{ Name = "Hide Administrative Tools"; Enabled = $false; Key = "AdminTools"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"; RegName = "NoAdminToolsMenu"; RegValue = 1 }
+    )
+}
+
+function Save-RestrictionsToINI {
+    param(
+        [array]$Restrictions,
+        [string]$OutputPath = $PWD
+    )
+    
+    try {
+        $iniFile = Join-Path $OutputPath "restrictions.ini"
+        $content = @(
+            "[Restrictions]",
+            "# Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+            "# These settings will be applied on installation in Student mode",
+            "# Change values to true to enable, false to disable",
+            ""
+        )
+        
+        foreach ($restriction in $Restrictions) {
+            $enabled = if ($restriction.Enabled) { "true" } else { "false" }
+            $content += "$($restriction.Key)=$enabled"
+        }
+        
+        $content | Out-File $iniFile -Encoding UTF8 -Force
+        Write-Log "Restrictions saved to: $iniFile" -Level Success
+        Write-Host "Restrictions configuration saved to: $iniFile" -ForegroundColor $script:Colors.Success
+        return $true
+    } catch {
+        Write-Log "Failed to save restrictions to INI: $_" -Level Error
+        Write-Host "Warning: Could not save restrictions configuration: $_" -ForegroundColor $script:Colors.Warning
+        return $false
+    }
+}
+
+function Load-RestrictionsFromINI {
+    param(
+        [string]$InputPath = $PWD
+    )
+    
+    try {
+        $iniFile = Join-Path $InputPath "restrictions.ini"
+        
+        if (!(Test-Path $iniFile)) {
+            Write-Log "No restrictions.ini file found at: $iniFile"
+            return $null
+        }
+        
+        $restrictions = Get-RestrictionDefinitions
+        $iniContent = Get-Content $iniFile | Where-Object { $_ -and !$_.StartsWith("#") -and $_.Contains("=") }
+        
+        foreach ($line in $iniContent) {
+            $parts = $line -split "="
+            if ($parts.Count -eq 2) {
+                $key = $parts[0].Trim()
+                $value = $parts[1].Trim().ToLower()
+                $restriction = $restrictions | Where-Object { $_.Key -eq $key }
+                if ($restriction) {
+                    $restriction.Enabled = ($value -eq "true")
+                }
+            }
+        }
+        
+        Write-Log "Restrictions loaded from: $iniFile" -Level Success
+        return $restrictions
+    } catch {
+        Write-Log "Failed to load restrictions from INI: $_" -Level Error
+        return $null
+    }
+}
+
+function Detect-ActiveRestrictions {
+    try {
+        $restrictions = Get-RestrictionDefinitions
+        $activeCount = 0
+        
+        foreach ($restriction in $restrictions) {
+            if ($restriction.RegPath -and (Test-Path $restriction.RegPath)) {
+                try {
+                    $value = Get-ItemProperty -Path $restriction.RegPath -Name $restriction.RegName -ErrorAction SilentlyContinue
+                    if ($value) {
+                        $restriction.Enabled = $true
+                        $activeCount++
+                    }
+                } catch {
+                    # Restriction not applied
+                }
+            }
+        }
+        
+        Write-Log "Detected $activeCount active restrictions"
+        return $restrictions
+    } catch {
+        Write-Log "Failed to detect active restrictions: $_" -Level Error
+        return Get-RestrictionDefinitions
+    }
+}
+
+function Apply-RestrictionWithFallback {
+    param(
+        [hashtable]$Restriction
+    )
+    
+    $registrySuccess = $false
+    $fallbackSuccess = $false
+    
+    # Attempt 1: Direct Registry Modification (Primary method)
+    try {
+        if ($Restriction.RegPath -and $Restriction.RegName) {
+            # Create registry path if it doesn't exist
+            if (!(Test-Path $Restriction.RegPath)) {
+                New-Item -Path $Restriction.RegPath -Force -ErrorAction Stop | Out-Null
+            }
+            
+            # Set the registry value
+            Set-ItemProperty -Path $Restriction.RegPath -Name $Restriction.RegName -Value $Restriction.RegValue -Force -ErrorAction Stop
+            $registrySuccess = $true
+            Write-Log "Registry method successful for: $($Restriction.Name)" -Level Success
+        }
+    } catch {
+        $registryError = $_.Exception.Message
+        Write-Log "Registry method failed for $($Restriction.Name): $registryError" -Level Warning
+    }
+    
+    # Attempt 2: Group Policy Fallback (if registry failed)
+    if (!$registrySuccess -and $Restriction.RegPath -and $Restriction.RegName) {
+        try {
+            # Build LGPO-style policy path from registry path
+            $policyPath = $Restriction.RegPath.Replace("HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\", "")
+            $policyPath = $Restriction.RegPath.Replace("HKLM:\SOFTWARE\", "")
+            
+            # Try using secedit to apply the restriction
+            Write-Log "Attempting Group Policy fallback for: $($Restriction.Name)" -Level Info
+            
+            # For Local Group Policy, we'll try to use the registry paths that Group Policy monitors
+            # Group Policy reads from: HKLM\SOFTWARE\Policies\... (Policies hive)
+            $gpPolicyPath = $Restriction.RegPath.Replace(
+                "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\",
+                "HKCU:\SOFTWARE\Policies\"
+            ).Replace(
+                "HKLM:\SOFTWARE\Microsoft\",
+                "HKLM:\SOFTWARE\Policies\Microsoft\"
+            ).Replace(
+                "HKLM:\SOFTWARE\",
+                "HKLM:\SOFTWARE\Policies\"
+            )
+            
+            # If the path has already been converted, use it; otherwise use original
+            if ($gpPolicyPath -ne $Restriction.RegPath) {
+                if (!(Test-Path $gpPolicyPath)) {
+                    New-Item -Path $gpPolicyPath -Force -ErrorAction Stop | Out-Null
+                }
+                Set-ItemProperty -Path $gpPolicyPath -Name $Restriction.RegName -Value $Restriction.RegValue -Force -ErrorAction Stop
+                $fallbackSuccess = $true
+                Write-Log "Group Policy method successful for: $($Restriction.Name)" -Level Success
+            }
+            
+            # Attempt to refresh Group Policy to apply changes
+            if ($fallbackSuccess) {
+                try {
+                    & gpupdate /force | Out-Null
+                    Write-Log "Invoked gpupdate /force to apply Group Policy changes" -Level Info
+                } catch {
+                    Write-Log "Could not invoke gpupdate, but Group Policy registry entry was modified" -Level Info
+                }
+            }
+        } catch {
+            $gpError = $_.Exception.Message
+            Write-Log "Group Policy fallback failed for $($Restriction.Name): $gpError" -Level Warning
+        }
+    }
+    
+    return ($registrySuccess -or $fallbackSuccess)
+}
+
 function Set-UserRestrictions {
     Show-Header
     Write-Host "USER RESTRICTION SETTINGS" -ForegroundColor $script:Colors.Header
     Write-Host ""
     
     Write-Host "Apply restrictive settings to non-admin users?" -ForegroundColor $script:Colors.Warning
-    Write-Host "This will modify Group Policies and Windows Settings." -ForegroundColor $script:Colors.Warning
+    Write-Host "This will modify registry and Group Policy settings." -ForegroundColor $script:Colors.Warning
     Write-Host ""
     
     $confirm = Read-Host "Continue? (y/N)"
@@ -1287,24 +1721,31 @@ function Set-UserRestrictions {
         return
     }
     
+    # Check if restrictions.ini exists and offer to load it
+    $iniPath = Join-Path $PWD "restrictions.ini"
+    $restrictions = $null
+    
+    if (Test-Path $iniPath) {
+        Write-Host ""
+        Write-Host "Found existing restrictions.ini file!" -ForegroundColor $script:Colors.Success
+        $loadConfig = Read-Host "Load restrictions from file? (Y/n)"
+        if ($loadConfig -ne 'n') {
+            $restrictions = Load-RestrictionsFromINI -InputPath $PWD
+        }
+    }
+    
+    # If not loaded from file, detect current or show defaults
+    if (!$restrictions) {
+        Write-Host ""
+        Write-Host "Detecting currently active restrictions..." -ForegroundColor $script:Colors.Info
+        $restrictions = Detect-ActiveRestrictions
+    }
+    
     Show-Header
     Write-Host "USER RESTRICTION SETTINGS" -ForegroundColor $script:Colors.Header
     Write-Host ""
-    Write-Host "Select restrictions to apply (marked with [X] are enabled by default):" -ForegroundColor $script:Colors.Info
+    Write-Host "Select restrictions to apply (marked with [X] are enabled):" -ForegroundColor $script:Colors.Info
     Write-Host ""
-    
-    $restrictions = @(
-        @{ Name = "Disable Automatic Updates"; Enabled = $false; Key = "AutoUpdate" },
-        @{ Name = "Disable Background Change"; Enabled = $false; Key = "Background" },
-        @{ Name = "Disable PC Name Change"; Enabled = $true; Key = "PCName" },
-        @{ Name = "Disable Script Execution"; Enabled = $true; Key = "Scripts" },
-        @{ Name = "Disable Control Panel Access"; Enabled = $false; Key = "ControlPanel" },
-        @{ Name = "Disable Registry Editor"; Enabled = $false; Key = "RegEdit" },
-        @{ Name = "Disable Task Manager"; Enabled = $false; Key = "TaskMgr" },
-        @{ Name = "Disable Command Prompt"; Enabled = $false; Key = "CMD" },
-        @{ Name = "Disable Windows Settings"; Enabled = $false; Key = "Settings" },
-        @{ Name = "Hide System Drive in Explorer"; Enabled = $false; Key = "CDrive" }
-    )
     
     for ($i = 0; $i -lt $restrictions.Count; $i++) {
         $marker = if ($restrictions[$i].Enabled) { "[X]" } else { "[ ]" }
@@ -1315,6 +1756,7 @@ function Set-UserRestrictions {
     Write-Host "Commands:" -ForegroundColor $script:Colors.Header
     Write-Host "  - Enter numbers to toggle (comma-separated, e.g., 1,3,5)" -ForegroundColor $script:Colors.Info
     Write-Host "  - Enter 'A' to apply current selection" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Enter 'S' to save configuration to restrictions.ini" -ForegroundColor $script:Colors.Info
     Write-Host "  - Enter '0' to cancel" -ForegroundColor $script:Colors.Info
     Write-Host ""
     
@@ -1323,6 +1765,11 @@ function Set-UserRestrictions {
         
         if ($input -eq '0') { return }
         if ($input -eq 'A' -or $input -eq 'a') { break }
+        if ($input -eq 'S' -or $input -eq 's') {
+            Save-RestrictionsToINI -Restrictions $restrictions -OutputPath $PWD
+            Write-Host ""
+            continue
+        }
         
         $selections = $input -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
         foreach ($sel in $selections) {
@@ -1343,7 +1790,7 @@ function Set-UserRestrictions {
             Write-Host "  [$($i + 1)] $marker $($restrictions[$i].Name)" -ForegroundColor $script:Colors.Info
         }
         Write-Host ""
-        Write-Host "Commands: Numbers to toggle | 'A' to apply | '0' to cancel" -ForegroundColor $script:Colors.Prompt
+        Write-Host "Commands: Numbers to toggle | 'A' to apply | 'S' to save | '0' to cancel" -ForegroundColor $script:Colors.Prompt
         Write-Host ""
         
     } while ($true)
@@ -1363,6 +1810,8 @@ function Set-UserRestrictions {
     
     $step = 0
     $totalSteps = $enabledRestrictions.Count
+    $successCount = 0
+    $failureCount = 0
     
     try {
         foreach ($restriction in $enabledRestrictions) {
@@ -1371,49 +1820,28 @@ function Set-UserRestrictions {
             Show-Progress -Activity "Applying Restrictions" -Status "[$step/$totalSteps] $($restriction.Name)" -PercentComplete $percent
             Start-Sleep -Milliseconds 300
             
-            switch ($restriction.Key) {
-                "AutoUpdate" {
-                    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoUpdate" -Value 1 -Force
+            # Apply restriction with registry primary method and Group Policy fallback
+            if ($restriction.Key -eq "Scripts") {
+                # Special handling for Script Execution
+                try {
+                    Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope CurrentUser -Force -ErrorAction Stop
+                    Write-Log "Applied restriction: $($restriction.Name) (Execution Policy)" -Level Success
+                    $successCount++
+                } catch {
+                    Write-Log "Failed to apply Script Execution restriction: $_" -Level Warning
+                    $failureCount++
                 }
-                "Background" {
-                    New-Item -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop" -Name "NoChangingWallPaper" -Value 1 -Force
-                }
-                "PCName" {
-                    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "DontDisplayNetworkSelectionUI" -Value 1 -Force
-                }
-                "Scripts" {
-                    Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope CurrentUser -Force -ErrorAction SilentlyContinue
-                }
-                "ControlPanel" {
-                    New-Item -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "NoControlPanel" -Value 1 -Force
-                }
-                "RegEdit" {
-                    New-Item -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "DisableRegistryTools" -Value 1 -Force
-                }
-                "TaskMgr" {
-                    New-Item -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "DisableTaskMgr" -Value 1 -Force
-                }
-                "CMD" {
-                    New-Item -Path "HKCU:\SOFTWARE\Policies\Microsoft\Windows\System" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKCU:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "DisableCMD" -Value 1 -Force
-                }
-                "Settings" {
-                    New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "SettingsPageVisibility" -Value "hide:windowsupdate" -Force
-                }
-                "CDrive" {
-                    New-Item -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "NoDrives" -Value 4 -Force
+            } else {
+                # Use standard registry + Group Policy fallback for all other restrictions
+                $applied = Apply-RestrictionWithFallback -Restriction $restriction
+                if ($applied) {
+                    Write-Log "Applied restriction: $($restriction.Name)" -Level Success
+                    $successCount++
+                } else {
+                    Write-Log "Failed to apply restriction: $($restriction.Name)" -Level Warning
+                    $failureCount++
                 }
             }
-            
-            Write-Log "Applied restriction: $($restriction.Name)" -Level Success
         }
         
         Show-Progress -Activity "Applying Restrictions" -Status "Complete" -PercentComplete 100
@@ -1422,8 +1850,18 @@ function Set-UserRestrictions {
         
         Write-Host ""
         Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
-        Write-Host " $($enabledRestrictions.Count) restriction(s) applied successfully!" -ForegroundColor $script:Colors.Success
+        Write-Host " Restriction Application Summary" -ForegroundColor $script:Colors.Success
         Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
+        Write-Host ""
+        Write-Host "Total restrictions selected: $($enabledRestrictions.Count)" -ForegroundColor $script:Colors.Info
+        Write-Host "Successfully applied:       $successCount" -ForegroundColor $script:Colors.Success
+        if ($failureCount -gt 0) {
+            Write-Host "Failed to apply:            $failureCount" -ForegroundColor $script:Colors.Warning
+        }
+        Write-Host ""
+        Write-Host "Application methods used:" -ForegroundColor $script:Colors.Info
+        Write-Host "  - Primary: Direct Registry Modification" -ForegroundColor $script:Colors.Info
+        Write-Host "  - Fallback: Group Policy (if registry method fails)" -ForegroundColor $script:Colors.Info
         Write-Host ""
         Write-Host "Note: Some restrictions require a logoff/restart to take effect." -ForegroundColor $script:Colors.Warning
         
