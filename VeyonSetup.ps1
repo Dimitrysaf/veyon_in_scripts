@@ -15,13 +15,13 @@
 # Script configuration
 $script:Config = @{
     VeyonGitHubAPI = "https://api.github.com/repos/veyon/veyon/releases/latest"
-    VeyonDownloadUrl = $null  # Will be determined dynamically
-    VeyonVersion = $null      # Will be determined dynamically
+    VeyonDownloadUrl = $null
+    VeyonVersion = $null
     VeyonInstallerPath = "$env:TEMP\veyon-setup.exe"
     VeyonConfigPath = "$env:ProgramData\Veyon\config.json"
     KeysBasePath = "$env:ProgramData\Veyon\keys"
     LogPath = "$env:ProgramData\Veyon\setup.log"
-    ExpectedSHA256 = $null    # Will be fetched or verified
+    ExpectedSHA256 = $null
     ManualUrls = @{
         Admin = "https://docs.veyon.io/en/latest/admin/index.html"
         User = "https://docs.veyon.io/en/latest/user/index.html"
