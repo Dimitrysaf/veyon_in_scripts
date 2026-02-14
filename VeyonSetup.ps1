@@ -28,6 +28,10 @@ $script:Config = @{
     }
 }
 
+# Verbose logging preference
+$script:Config.LogVerbose = $true
+
+
 # Color scheme for UI
 $script:Colors = @{
     Header = 'Cyan'
@@ -69,6 +73,128 @@ function Write-Log {
     }
     
     Write-Host $logMessage -ForegroundColor $color
+}
+
+function Rotate-Logs {
+    param(
+        [int]$MaxFiles = 5,
+        [int]$MaxSizeMB = 5
+    )
+
+    try {
+        $logPath = $script:Config.LogPath
+        $logDir = Split-Path $logPath
+        if (!(Test-Path $logDir)) { return }
+
+        if (Test-Path $logPath) {
+            $fi = Get-Item $logPath
+            if ($fi.Length -gt ($MaxSizeMB * 1MB)) {
+                $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+                $rotated = Join-Path $logDir ("setup_$ts.log")
+                Move-Item -Path $logPath -Destination $rotated -Force
+            }
+        }
+
+        # Clean old rotated logs
+        $rotatedLogs = Get-ChildItem -Path $logDir -Filter 'setup_*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+        if ($rotatedLogs.Count -gt $MaxFiles) {
+            $rotatedLogs | Select-Object -Skip $MaxFiles | ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+        }
+    } catch {
+        Write-Log "Rotate-Logs failed: $_" -Level Warning
+    }
+}
+
+function Preflight-Checks {
+    param(
+        [int]$MinFreeMB = 500,
+        [switch]$RequireNonAdmin
+    )
+
+    try {
+        $ok = $true
+
+        # OS Version check
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem
+        $caption = $os.Caption
+        if ($caption -notmatch 'Windows 10|Windows 11') {
+            Write-Host "Warning: OS detected: $caption" -ForegroundColor $script:Colors.Warning
+            Write-Log "Preflight: Non-standard OS detected: $caption" -Level Warning
+            $resp = Read-Host "Proceed anyway? (y/N)"
+            if ($resp -ne 'y') { $ok = $false }
+        }
+
+        # Disk space check (system drive)
+        $sysDrive = (Get-PSDrive -Name (Split-Path $env:SystemDrive -Qualifier)).Name
+        $freeMB = [math]::Round((Get-PSDrive -Name $env:SystemDrive.TrimEnd('\'))[0].Free / 1MB, 0)
+        if ($freeMB -lt $MinFreeMB) {
+            Write-Host "Warning: Low disk space on system drive: $freeMB MB free" -ForegroundColor $script:Colors.Warning
+            Write-Log "Preflight: Low disk space ($freeMB MB)" -Level Warning
+            $resp = Read-Host "Continue with low disk space? (y/N)"
+            if ($resp -ne 'y') { $ok = $false }
+        }
+
+        if ($RequireNonAdmin) {
+            $nonAdmins = Get-NonAdminUserProfiles
+            if ($nonAdmins.Count -eq 0) {
+                Write-Host "Error: No non-admin user profiles detected. Aborting." -ForegroundColor $script:Colors.Error
+                Write-Log "Preflight failed: no non-admin users found" -Level Error
+                $ok = $false
+            }
+        }
+
+        return $ok
+    } catch {
+        Write-Log "Preflight-Checks failed: $_" -Level Warning
+        return $false
+    }
+}
+
+function Add-SummaryEntry {
+    param(
+        [string]$Key,
+        [string]$Value
+    )
+    if (-not $script:SessionSummary) { $script:SessionSummary = @{} }
+    $script:SessionSummary[$Key] = $Value
+}
+
+function Show-FinalStatus {
+    try {
+        Write-Host ""; Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
+        Write-Host "FINAL STATUS SUMMARY" -ForegroundColor $script:Colors.Header
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
+        if ($script:SessionSummary) {
+            foreach ($k in $script:SessionSummary.Keys) {
+                Write-Host "  $k : $($script:SessionSummary[$k])" -ForegroundColor $script:Colors.Info
+            }
+        } else {
+            Write-Host "  No session summary available." -ForegroundColor $script:Colors.Warning
+        }
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Header
+    } catch {
+        Write-Log "Show-FinalStatus failed: $_" -Level Warning
+    }
+}
+
+function Backup-VeyonConfiguration {
+    param(
+        [string]$DestinationRoot = "$env:TEMP\VeyonBackups"
+    )
+    try {
+        $src = "C:\ProgramData\Veyon"
+        if (!(Test-Path $src)) { Write-Log "No Veyon data to backup" -Level Info; return $false }
+        if (!(Test-Path $DestinationRoot)) { New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null }
+        $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $dest = Join-Path $DestinationRoot "VeyonBackup_$ts.zip"
+        Compress-Archive -Path $src\* -DestinationPath $dest -Force -ErrorAction Stop
+        Write-Log "Backup created: $dest" -Level Success
+        Add-SummaryEntry -Key "Backup" -Value $dest
+        return $true
+    } catch {
+        Write-Log "Backup failed: $_" -Level Warning
+        return $false
+    }
 }
 
 function Show-Header {
@@ -578,6 +704,15 @@ function Install-Veyon {
     Start-Sleep -Seconds 2
     
     try {
+        # Run preflight checks (require at least one non-admin user for installs)
+        $preflightOk = Preflight-Checks -MinFreeMB 500 -RequireNonAdmin
+        if (-not $preflightOk) {
+            Write-Host "Preflight checks failed or cancelled. Aborting installation." -ForegroundColor $script:Colors.Error
+            Write-Log "Installation aborted due to failed preflight checks" -Level Error
+            Invoke-ReturnToMenu
+            return
+        }
+
         # Get latest version info
         Write-Host "Fetching latest Veyon version information..." -ForegroundColor $script:Colors.Info
         $releaseInfo = Get-LatestVeyonRelease
@@ -2439,6 +2574,7 @@ function Show-MainMenu {
             Write-Host ""
             Write-Host "Thank you for using Veyon Installation Tool!" -ForegroundColor $script:Colors.Info
             Write-Log "Script exited by user"
+            Show-FinalStatus
             Write-Host ""
             exit 0
         }
@@ -2590,6 +2726,19 @@ function Main {
     Write-Log "User: $env:USERNAME"
     Write-Log "Computer: $env:COMPUTERNAME"
     
+    # Rotate logs before starting new session
+    Rotate-Logs -MaxFiles 7 -MaxSizeMB 5
+
+    # Start transcript if verbose logging enabled
+    if ($script:Config.LogVerbose) {
+        try {
+            Start-Transcript -Path $script:Config.LogPath -Append -ErrorAction SilentlyContinue
+            Write-Log "Transcript started" -Level Info
+        } catch {
+            Write-Log "Could not start transcript: $_" -Level Warning
+        }
+    }
+    
     # Check for CLI mode
     if ($Command) {
         switch ($Command.ToLower()) {
@@ -2703,6 +2852,7 @@ For detailed documentation, visit:
         }
         
         Write-Log "CLI mode completed successfully"
+        Show-FinalStatus
         return
     }
     
