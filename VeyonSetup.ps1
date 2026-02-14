@@ -71,7 +71,7 @@ function Write-Log {
 function Show-Header {
     Clear-Host
     Write-Host "=" * 80 -ForegroundColor $script:Colors.Header
-    Write-Host " VEYON INSTALLATION & CONFIGURATION TOOL v2.0" -ForegroundColor $script:Colors.Header
+    Write-Host " VEYON INSTALLATION & CONFIGURATION TOOL" -ForegroundColor $script:Colors.Header
     Write-Host "=" * 80 -ForegroundColor $script:Colors.Header
     Write-Host ""
 }
