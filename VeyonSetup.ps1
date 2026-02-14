@@ -15,13 +15,13 @@
 # Script configuration
 $script:Config = @{
     VeyonGitHubAPI = "https://api.github.com/repos/veyon/veyon/releases/latest"
-    VeyonDownloadUrl = $null
-    VeyonVersion = $null
+    VeyonDownloadUrl = $null  # Will be determined dynamically
+    VeyonVersion = $null      # Will be determined dynamically
     VeyonInstallerPath = "$env:TEMP\veyon-setup.exe"
     VeyonConfigPath = "$env:ProgramData\Veyon\config.json"
     KeysBasePath = "$env:ProgramData\Veyon\keys"
     LogPath = "$env:ProgramData\Veyon\setup.log"
-    ExpectedSHA256 = $null
+    ExpectedSHA256 = $null    # Will be fetched or verified
     ManualUrls = @{
         Admin = "https://docs.veyon.io/en/latest/admin/index.html"
         User = "https://docs.veyon.io/en/latest/user/index.html"
@@ -71,7 +71,7 @@ function Write-Log {
 function Show-Header {
     Clear-Host
     Write-Host "=" * 80 -ForegroundColor $script:Colors.Header
-    Write-Host " VEYON INSTALLATION & CONFIGURATION TOOL" -ForegroundColor $script:Colors.Header
+    Write-Host " VEYON INSTALLATION & CONFIGURATION TOOL v2.0" -ForegroundColor $script:Colors.Header
     Write-Host "=" * 80 -ForegroundColor $script:Colors.Header
     Write-Host ""
 }
@@ -799,7 +799,8 @@ function Uninstall-Veyon {
                 Write-Log "Stopped Veyon Service"
             }
         } catch {
-            Write-Log "Could not stop Veyon Service: $_" -Level Warning
+            $errorMsg = $_.Exception.Message
+            Write-Log "Could not stop Veyon Service: $errorMsg" -Level Warning
         }
         
         Show-Progress -Activity "Uninstalling Veyon" -Status "Running uninstaller..." -PercentComplete 30
@@ -832,7 +833,8 @@ function Uninstall-Veyon {
                         Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
                         Write-Log "Removed: $path"
                     } catch {
-                        Write-Log "Could not remove $path: $_" -Level Warning
+                        $errorMsg = $_.Exception.Message
+                        Write-Log "Could not remove $path : $errorMsg" -Level Warning
                     }
                 }
             }
