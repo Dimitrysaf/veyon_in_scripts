@@ -1877,6 +1877,235 @@ function Set-UserRestrictions {
 
 #endregion
 
+#region Windows Personalization Functions
+
+function Apply-PerformanceOptimization {
+    <#
+    .SYNOPSIS
+        Optimizes Windows for best performance by disabling visual effects, animations, and shadows.
+    .DESCRIPTION
+        Applies registry settings equivalent to "Adjust for best performance" in Windows Settings.
+    #>
+    
+    try {
+        Write-Log "Applying performance optimizations..." -Level Info
+        
+        # Registry paths for performance settings
+        $paths = @(
+            "HKCU:\Control Panel\Desktop",
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+        )
+        
+        # Ensure paths exist
+        foreach ($path in $paths) {
+            if (!(Test-Path $path)) {
+                New-Item -Path $path -Force | Out-Null
+            }
+        }
+        
+        # Disable animations (User Preference Mask)
+        # 90 12 03 80 = Best performance
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "UserPreferencesMask" -Value ([byte[]](0x90, 0x12, 0x03, 0x80)) -Force
+        
+        # Disable font smoothing
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "FontSmoothing" -Value "0" -Force
+        
+        # Disable window animations
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value "0" -Force -ErrorAction SilentlyContinue
+        
+        # Disable menu animations
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value "0" -Force
+        
+        # Disable taskbar animations
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAnimations" -Value "0" -Force
+        
+        # Remove visual effects from folder options
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "DisallowShaking" -Value "1" -Force
+        
+        # Disable tooltip animations
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "TooltipFadeTime" -Value "0" -Force -ErrorAction SilentlyContinue
+        
+        Write-Log "Performance optimizations applied successfully" -Level Success
+        return $true
+        
+    } catch {
+        Write-Log "Failed to apply performance optimizations: $_" -Level Warning
+        return $false
+    }
+}
+
+function Get-PersonalizationDefinitions {
+    return @(
+        @{ Name = "Disable Copilot in Windows"; Enabled = $false; Key = "Copilot"; RegPath = "HKCU:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot"; RegName = "TurnOffWindowsCopilot"; RegValue = 1 },
+        @{ Name = "Disable Ads in Start Menu"; Enabled = $false; Key = "StartMenuAds"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CloudStore\Store\Cache\DefaultAccount"; RegName = "LevelsToConvert"; RegValue = 0 },
+        @{ Name = "Disable Ads in Lock Screen"; Enabled = $false; Key = "LockScreenAds"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"; RegName = "RotatingLockScreenEnabled"; RegValue = 0 },
+        @{ Name = "Disable Targeted Ads"; Enabled = $false; Key = "TargetedAds"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\AdvertisingInfo"; RegName = "Enabled"; RegValue = 0 },
+        @{ Name = "Disable Game Bar"; Enabled = $false; Key = "GameBar"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR"; RegName = "AppCaptureEnabled"; RegValue = 0 },
+        @{ Name = "Disable Activity History"; Enabled = $false; Key = "ActivityHistory"; RegPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System"; RegName = "PublishUserActivities"; RegValue = 0 },
+        @{ Name = "Disable Telemetry/Diagnostic Data"; Enabled = $false; Key = "Telemetry"; RegPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"; RegName = "AllowDiagnosticData"; RegValue = 0 },
+        @{ Name = "Disable App Suggestions"; Enabled = $false; Key = "AppSuggestions"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"; RegName = "ContentDeliveryEnabled"; RegValue = 0 },
+        @{ Name = "Disable Tailored Experiences"; Enabled = $false; Key = "TailoredExp"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"; RegName = "FeatureManagementEnabled"; RegValue = 0 },
+        @{ Name = "Disable Cortana in Start Menu"; Enabled = $false; Key = "Cortana"; RegPath = "HKCU:\SOFTWARE\Microsoft\Personalization\Settings"; RegName = "AcceptedPrivacyPolicy"; RegValue = 0 },
+        @{ Name = "Disable OneDrive Autostart"; Enabled = $false; Key = "OneDrive"; RegPath = "HKCU:\SOFTWARE\Microsoft\OneDrive"; RegName = "DisableAutoStartOnSignIn"; RegValue = 1 },
+        @{ Name = "Disable Background App Refresh"; Enabled = $false; Key = "BackgroundApps"; RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications"; RegName = "GlobalUserDisabled"; RegValue = 1 },
+        @{ Name = "Optimize for Best Performance"; Enabled = $false; Key = "Performance"; RegPath = $null; RegName = $null; RegValue = $null }
+    )
+}
+
+function Set-WindowsPersonalization {
+    Show-Header
+    Write-Host "WINDOWS PERSONALIZATION & CLEANUP" -ForegroundColor $script:Colors.Header
+    Write-Host ""
+    
+    Write-Host "Apply Windows personalization settings?" -ForegroundColor $script:Colors.Warning
+    Write-Host "This will disable ads, telemetry, and bloatware on this computer." -ForegroundColor $script:Colors.Warning
+    Write-Host ""
+    
+    $confirm = Read-Host "Continue? (y/N)"
+    if ($confirm -ne 'y') {
+        return
+    }
+    
+    # Load personalization settings definitions
+    $personalizations = Get-PersonalizationDefinitions
+    
+    Show-Header
+    Write-Host "WINDOWS PERSONALIZATION & CLEANUP" -ForegroundColor $script:Colors.Header
+    Write-Host ""
+    Write-Host "Select personalization options to apply (marked with [X] are enabled):" -ForegroundColor $script:Colors.Info
+    Write-Host ""
+    
+    for ($i = 0; $i -lt $personalizations.Count; $i++) {
+        $marker = if ($personalizations[$i].Enabled) { "[X]" } else { "[ ]" }
+        Write-Host "  [$($i + 1)] $marker $($personalizations[$i].Name)" -ForegroundColor $script:Colors.Info
+    }
+    
+    Write-Host ""
+    Write-Host "Commands:" -ForegroundColor $script:Colors.Header
+    Write-Host "  - Enter numbers to toggle (comma-separated, e.g., 1,3,5)" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Enter 'A' to apply current selection" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Enter 'ALL' to enable all options" -ForegroundColor $script:Colors.Info
+    Write-Host "  - Enter '0' to cancel" -ForegroundColor $script:Colors.Info
+    Write-Host ""
+    
+    do {
+        $input = Read-Host "Enter command"
+        
+        if ($input -eq '0') { return }
+        if ($input -eq 'A' -or $input -eq 'a') { break }
+        if ($input -eq 'ALL' -or $input -eq 'all') {
+            foreach ($personalization in $personalizations) {
+                $personalization.Enabled = $true
+            }
+            break
+        }
+        
+        $selections = $input -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
+        foreach ($sel in $selections) {
+            $index = [int]$sel - 1
+            if ($index -ge 0 -and $index -lt $personalizations.Count) {
+                $personalizations[$index].Enabled = !$personalizations[$index].Enabled
+            }
+        }
+        
+        # Redisplay
+        Show-Header
+        Write-Host "WINDOWS PERSONALIZATION & CLEANUP" -ForegroundColor $script:Colors.Header
+        Write-Host ""
+        Write-Host "Select personalization options:" -ForegroundColor $script:Colors.Info
+        Write-Host ""
+        for ($i = 0; $i -lt $personalizations.Count; $i++) {
+            $marker = if ($personalizations[$i].Enabled) { "[X]" } else { "[ ]" }
+            Write-Host "  [$($i + 1)] $marker $($personalizations[$i].Name)" -ForegroundColor $script:Colors.Info
+        }
+        Write-Host ""
+        Write-Host "Commands: Numbers to toggle | 'A' to apply | 'ALL' to enable all | '0' to cancel" -ForegroundColor $script:Colors.Prompt
+        Write-Host ""
+        
+    } while ($true)
+    
+    # Apply personalization settings
+    $enabledPersonalizations = $personalizations | Where-Object { $_.Enabled }
+    
+    if ($enabledPersonalizations.Count -eq 0) {
+        Write-Host "No personalization options selected." -ForegroundColor $script:Colors.Warning
+        Read-Host "Press Enter to continue"
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "Applying $($enabledPersonalizations.Count) personalization option(s)..." -ForegroundColor $script:Colors.Info
+    Write-Host ""
+    
+    $step = 0
+    $totalSteps = $enabledPersonalizations.Count
+    $successCount = 0
+    $failureCount = 0
+    
+    try {
+        foreach ($personalization in $enabledPersonalizations) {
+            $step++
+            $percent = [int](($step / $totalSteps) * 100)
+            Show-Progress -Activity "Personalizing Windows" -Status "[$step/$totalSteps] $($personalization.Name)" -PercentComplete $percent
+            Start-Sleep -Milliseconds 300
+            
+            # Handle performance optimization separately (requires multiple registry changes)
+            if ($personalization.Key -eq "Performance") {
+                $applied = Apply-PerformanceOptimization
+                if ($applied) {
+                    Write-Log "Applied personalization: $($personalization.Name)" -Level Success
+                    $successCount++
+                } else {
+                    Write-Log "Failed to apply personalization: $($personalization.Name)" -Level Warning
+                    $failureCount++
+                }
+            } else {
+                # Apply other personalizations with registry primary method and Group Policy fallback
+                $applied = Apply-RestrictionWithFallback -Restriction $personalization
+                if ($applied) {
+                    Write-Log "Applied personalization: $($personalization.Name)" -Level Success
+                    $successCount++
+                } else {
+                    Write-Log "Failed to apply personalization: $($personalization.Name)" -Level Warning
+                    $failureCount++
+                }
+            }
+        }
+        
+        Show-Progress -Activity "Personalizing Windows" -Status "Complete" -PercentComplete 100
+        Start-Sleep -Milliseconds 500
+        Write-Progress -Activity "Personalizing Windows" -Completed
+        
+        Write-Host ""
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
+        Write-Host " Personalization Summary" -ForegroundColor $script:Colors.Success
+        Write-Host $script:Line80 -ForegroundColor $script:Colors.Success
+        Write-Host ""
+        Write-Host "Total options selected:    $($enabledPersonalizations.Count)" -ForegroundColor $script:Colors.Info
+        Write-Host "Successfully applied:      $successCount" -ForegroundColor $script:Colors.Success
+        if ($failureCount -gt 0) {
+            Write-Host "Failed to apply:           $failureCount" -ForegroundColor $script:Colors.Warning
+        }
+        Write-Host ""
+        Write-Host "Applied changes:" -ForegroundColor $script:Colors.Info
+        foreach ($personalization in $enabledPersonalizations) {
+            Write-Host "  ✓ $($personalization.Name)" -ForegroundColor $script:Colors.Success
+        }
+        Write-Host ""
+        Write-Host "Note: Some changes require a logoff or restart to take full effect." -ForegroundColor $script:Colors.Warning
+        
+    } catch {
+        Write-Log "Failed to apply personalization settings: $_" -Level Error
+        Write-Host ""
+        Write-Host "Failed to apply personalization settings: $_" -ForegroundColor $script:Colors.Error
+    }
+    
+    Write-Host ""
+    Read-Host "Press Enter to continue"
+}
+
+#endregion
+
 #region Computer Management Functions
 
 function Rename-ComputerMenu {
@@ -1979,8 +2208,9 @@ function Show-MainMenu {
     Write-Host "  [3] Uninstall Veyon" -ForegroundColor $script:Colors.Info
     Write-Host "  [4] Configure Veyon" -ForegroundColor $script:Colors.Info
     Write-Host "  [5] User Restrictions" -ForegroundColor $script:Colors.Info
-    Write-Host "  [6] Rename Computer" -ForegroundColor $script:Colors.Info
-    Write-Host "  [7] Documentation & Help" -ForegroundColor $script:Colors.Info
+    Write-Host "  [6] Windows Personalization & Cleanup" -ForegroundColor $script:Colors.Info
+    Write-Host "  [7] Rename Computer" -ForegroundColor $script:Colors.Info
+    Write-Host "  [8] Documentation & Help" -ForegroundColor $script:Colors.Info
     Write-Host "  [0] Exit" -ForegroundColor $script:Colors.Warning
     Write-Host ""
     
@@ -1992,8 +2222,9 @@ function Show-MainMenu {
         '3' { Uninstall-Veyon }
         '4' { Set-VeyonConfiguration }
         '5' { Set-UserRestrictions }
-        '6' { Rename-ComputerMenu }
-        '7' { Show-Documentation }
+        '6' { Set-WindowsPersonalization }
+        '7' { Rename-ComputerMenu }
+        '8' { Show-Documentation }
         '0' { 
             Write-Host ""
             Write-Host "Thank you for using Veyon Installation Tool!" -ForegroundColor $script:Colors.Info
