@@ -1,3 +1,4 @@
 # Python dependencies for Veyon Installer Suite
 requests>=2.31.0
 colorama>=0.4.6
+pywin32>=306; sys_platform == 'win32'

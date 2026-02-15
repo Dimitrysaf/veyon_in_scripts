@@ -253,23 +253,61 @@ def install_student():
                 
                 # Use ShellExecute with runas to trigger UAC prompt
                 try:
-                    result = ctypes.windll.shell32.ShellExecuteW(
-                        None, 
-                        "runas",  # Trigger UAC
-                        str(temp_installer),
-                        "/S",  # Silent flag
-                        None,
-                        1  # SW_SHOWNORMAL
+                    import win32api
+                    import win32event
+                    import win32process
+                    from win32com.shell import shell, shellcon
+                    
+                    # Get process info structure
+                    sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
+                    sei = shell.ShellExecuteEx(
+                        fMask=sei_mask,
+                        lpVerb='runas',
+                        lpFile=str(temp_installer),
+                        lpParameters='/S',
+                        nShow=1
                     )
                     
-                    # ShellExecute returns > 32 on success
+                    hProcess = sei['hProcess']
+                    
+                    if hProcess:
+                        logger.info("Installer launched with elevation (UAC prompted)")
+                        logger.info("Waiting for installer to complete...")
+                        
+                        # Wait for process to finish (infinite timeout)
+                        win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+                        
+                        # Get exit code
+                        exit_code = win32process.GetExitCodeProcess(hProcess)
+                        win32api.CloseHandle(hProcess)
+                        
+                        logger.info(f"Installer exited with code {exit_code}")
+                        
+                        if exit_code != 0:
+                            logger.warning(f"Installer returned non-zero exit code: {exit_code}")
+                    else:
+                        raise Exception("Failed to get process handle from elevated installer")
+                    
+                except ImportError:
+                    # Fallback if pywin32 not available
+                    logger.warning("pywin32 not available, using fallback method")
+                    
+                    result = ctypes.windll.shell32.ShellExecuteW(
+                        None, 
+                        "runas",
+                        str(temp_installer),
+                        "/S",
+                        None,
+                        1
+                    )
+                    
                     if result <= 32:
                         raise Exception(f"ShellExecute failed with code {result}")
                     
                     logger.info("Installer launched with elevation (UAC prompted)")
-                    logger.warning("Waiting 30 seconds for installation to complete...")
-                    time.sleep(30)  # Wait for installer to finish
-                    exit_code = 0  # Assume success if no error
+                    logger.warning("Cannot track process without pywin32. Waiting 30 seconds...")
+                    time.sleep(30)
+                    exit_code = 0
                     
                 except Exception as e:
                     logger.error(f"Failed to elevate installer: {e}")
