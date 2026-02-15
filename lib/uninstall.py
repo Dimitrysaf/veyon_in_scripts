@@ -1,14 +1,12 @@
 """
 uninstall.py - Veyon Complete Uninstallation Script
-- Stops Veyon service
-- Runs silent uninstaller
-- Removes ProgramData\Veyon folder (including keys)
-- Cleans up registry entries (if needed)
+- Runs uninstaller with UAC elevation
+- Asks user if they want to remove data
+- Removes ProgramData\Veyon with UAC elevation (if user confirms)
 """
 
 import os
 import sys
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -16,39 +14,6 @@ from pathlib import Path
 # Import logger
 sys.path.insert(0, str(Path(__file__).parent))
 from logger import get_logger
-
-def stop_veyon_service():
-    """Stop Veyon service before uninstalling"""
-    logger = get_logger()
-    
-    logger.info("Stopping Veyon service...")
-    
-    try:
-        # Stop the service using sc stop (we're running as admin now)
-        result = subprocess.run(
-            ['sc', 'stop', 'VeyonService'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode == 0:
-            logger.info("Veyon service stopped successfully")
-            time.sleep(2)  # Wait for service to fully stop
-            return True
-        elif "not started" in result.stdout.lower() or "does not exist" in result.stdout.lower():
-            logger.info("Veyon service is not running or doesn't exist")
-            return True
-        else:
-            logger.warning(f"Service stop returned code {result.returncode}")
-            logger.debug(f"Output: {result.stdout}")
-            logger.warning("Continuing anyway...")
-            return True  # Don't fail on this
-            
-    except Exception as e:
-        logger.warning(f"Error stopping service: {e}")
-        logger.warning("Continuing anyway...")
-        return True
 
 def find_veyon_uninstaller():
     """Locate the Veyon uninstaller"""
@@ -66,60 +31,57 @@ def find_veyon_uninstaller():
             return path
     
     logger.error("Veyon uninstaller not found!")
-    logger.error("Veyon may not be installed or was installed to a custom location.")
     return None
 
-def run_uninstaller(uninstaller_path):
-    """Run Veyon uninstaller silently"""
+def run_uninstaller_elevated(uninstaller_path):
+    """Run Veyon uninstaller with UAC elevation"""
     logger = get_logger()
     
     logger.info(f"Running uninstaller: {uninstaller_path}")
-    logger.info("This may take a moment...")
-    
-    if sys.platform != 'win32':
-        logger.warning("Not running on Windows - skipping uninstaller")
-        return False
-    
-    import ctypes
-    
-    # Check if running as admin
-    try:
-        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-    except:
-        is_admin = False
-    
-    if not is_admin:
-        # This shouldn't happen since we check at the start
-        logger.error("Not running as administrator!")
-        raise Exception("Administrator privileges required")
-    
-    # Running as admin - execute directly and track process
-    logger.info("Running uninstaller with administrator privileges...")
+    logger.info("UAC prompt will appear - please approve")
     
     try:
-        process = subprocess.Popen(
-            [str(uninstaller_path), '/S'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+        import win32api
+        import win32event
+        import win32process
+        from win32com.shell import shell, shellcon
+        
+        # Run uninstaller with elevation
+        sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
+        sei = shell.ShellExecuteEx(
+            fMask=sei_mask,
+            lpVerb='runas',
+            lpFile=str(uninstaller_path),
+            lpParameters='/S',
+            nShow=1
         )
         
-        logger.info("Waiting for uninstaller to complete...")
-        process.wait()  # This will actually wait!
+        hProcess = sei['hProcess']
         
-        exit_code = process.returncode
-        logger.info(f"Uninstaller exited with code {exit_code}")
-        
-        if exit_code != 0:
-            logger.warning(f"Uninstaller returned non-zero exit code: {exit_code}")
-        
-        return True
-        
+        if hProcess:
+            logger.info("Uninstaller launched with elevation")
+            logger.info("Waiting for uninstaller to complete...")
+            
+            win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+            
+            exit_code = win32process.GetExitCodeProcess(hProcess)
+            win32api.CloseHandle(hProcess)
+            
+            logger.info(f"Uninstaller exited with code {exit_code}")
+            return exit_code == 0
+        else:
+            raise Exception("Failed to get process handle")
+    
+    except ImportError:
+        logger.error("pywin32 not available - cannot elevate uninstaller")
+        logger.error("Install pywin32: pip install pywin32")
+        return False
     except Exception as e:
         logger.error(f"Failed to run uninstaller: {e}")
-        raise
+        return False
 
-def remove_programdata():
-    """Remove Veyon folder from ProgramData (includes keys)"""
+def remove_programdata_elevated():
+    """Remove ProgramData folder with UAC elevation using PowerShell"""
     logger = get_logger()
     
     veyon_data_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon'
@@ -129,58 +91,60 @@ def remove_programdata():
         logger.info("Nothing to clean up")
         return True
     
-    logger.info(f"Removing ProgramData directory: {veyon_data_dir}")
-    
     try:
-        # Count files before deletion
         files = list(veyon_data_dir.rglob('*'))
         file_count = len([f for f in files if f.is_file()])
+        logger.info(f"Found {file_count} file(s) in ProgramData to remove")
+    except:
+        pass
+    
+    logger.info(f"Removing ProgramData directory: {veyon_data_dir}")
+    logger.info("UAC prompt will appear - please approve")
+    
+    ps_command = f'Remove-Item -Path "{veyon_data_dir}" -Recurse -Force'
+    
+    try:
+        import win32api
+        import win32event
+        import win32process
+        from win32com.shell import shell, shellcon
         
-        logger.info(f"Found {file_count} file(s) to remove")
+        sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
+        sei = shell.ShellExecuteEx(
+            fMask=sei_mask,
+            lpVerb='runas',
+            lpFile='powershell.exe',
+            lpParameters=f'-NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"',
+            nShow=0
+        )
         
-        # Remove the directory
-        shutil.rmtree(veyon_data_dir)
+        hProcess = sei['hProcess']
         
-        logger.info(f"Successfully removed {veyon_data_dir}")
-        logger.info("All Veyon keys and configuration have been deleted")
-        
-        return True
-        
-    except PermissionError as e:
-        logger.error(f"Permission denied: {e}")
-        logger.error("Make sure Veyon is not running and you have administrator privileges")
+        if hProcess:
+            logger.info("Folder deletion launched with elevation")
+            logger.info("Waiting for deletion to complete...")
+            
+            win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+            
+            exit_code = win32process.GetExitCodeProcess(hProcess)
+            win32api.CloseHandle(hProcess)
+            
+            if exit_code == 0:
+                logger.info("ProgramData directory removed successfully")
+                return True
+            else:
+                logger.warning(f"Deletion exited with code {exit_code}")
+                return False
+        else:
+            raise Exception("Failed to get process handle")
+    
+    except ImportError:
+        logger.error("pywin32 not available - cannot elevate deletion")
+        logger.error("Install pywin32: pip install pywin32")
         return False
     except Exception as e:
-        logger.error(f"Failed to remove ProgramData directory: {e}")
+        logger.error(f"Failed to remove ProgramData: {e}")
         return False
-
-def remove_program_files():
-    """Remove Veyon installation directory if it still exists"""
-    logger = get_logger()
-    
-    possible_dirs = [
-        Path(os.environ.get('PROGRAMFILES', 'C:/Program Files')) / 'Veyon',
-        Path(os.environ.get('PROGRAMFILES(X86)', 'C:/Program Files (x86)')) / 'Veyon',
-    ]
-    
-    removed_any = False
-    
-    for veyon_dir in possible_dirs:
-        if veyon_dir.exists():
-            logger.info(f"Removing installation directory: {veyon_dir}")
-            
-            try:
-                shutil.rmtree(veyon_dir)
-                logger.info(f"Successfully removed {veyon_dir}")
-                removed_any = True
-            except Exception as e:
-                logger.warning(f"Could not remove {veyon_dir}: {e}")
-                logger.warning("This is normal if uninstaller already removed it")
-    
-    if not removed_any:
-        logger.info("No installation directories found to remove")
-    
-    return True
 
 def uninstall_veyon():
     """Main uninstallation function"""
@@ -188,124 +152,72 @@ def uninstall_veyon():
     
     try:
         logger.info("uninstall: Starting Veyon removal")
-        logger.info("This will completely remove Veyon and all its data")
-        
-        # Check if running as admin
-        if sys.platform == 'win32':
-            import ctypes
-            try:
-                is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-            except:
-                is_admin = False
-            
-            if not is_admin:
-                logger.warning("Not running as administrator!")
-                logger.warning("Attempting to elevate and relaunch uninstall script...")
-                
-                # Get the path to this script
-                script_path = Path(__file__)
-                python_exe = sys.executable
-                
-                try:
-                    # Try with pywin32 first for better control
-                    try:
-                        import win32api
-                        import win32event
-                        import win32process
-                        from win32com.shell import shell, shellcon
-                        
-                        # Relaunch this script with admin rights
-                        sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
-                        sei = shell.ShellExecuteEx(
-                            fMask=sei_mask,
-                            lpVerb='runas',
-                            lpFile=python_exe,
-                            lpParameters=f'"{script_path}"',
-                            nShow=1
-                        )
-                        
-                        hProcess = sei['hProcess']
-                        
-                        if hProcess:
-                            logger.info("Uninstall script relaunched with elevation (UAC prompted)")
-                            logger.info("Waiting for elevated script to complete...")
-                            
-                            # Wait for process to finish
-                            win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
-                            
-                            # Get exit code
-                            exit_code = win32process.GetExitCodeProcess(hProcess)
-                            win32api.CloseHandle(hProcess)
-                            
-                            if exit_code == 0:
-                                logger.info("Uninstallation completed successfully")
-                            else:
-                                logger.warning(f"Elevated script exited with code {exit_code}")
-                            
-                            return True
-                        else:
-                            raise Exception("Failed to get process handle")
-                    
-                    except ImportError:
-                        # Fallback to ctypes
-                        logger.warning("pywin32 not available, using fallback elevation")
-                        
-                        result = ctypes.windll.shell32.ShellExecuteW(
-                            None,
-                            "runas",
-                            python_exe,
-                            f'"{script_path}"',
-                            None,
-                            1
-                        )
-                        
-                        if result > 32:
-                            logger.info("Uninstall script relaunched with elevation")
-                            logger.info("Waiting for completion...")
-                            import time
-                            time.sleep(3)  # Give it time to start
-                            logger.info("Elevated script is running. Check logs for completion.")
-                            return True
-                        else:
-                            raise Exception(f"ShellExecute failed with code {result}")
-                
-                except Exception as e:
-                    logger.error(f"Failed to elevate: {e}")
-                    logger.error("Please manually run as Administrator:")
-                    logger.error("  Right-click menu.py → 'Run as administrator'")
-                    raise Exception(
-                        "Could not auto-elevate. Please run as Administrator manually."
-                    )
-        
-        logger.info("Running with administrator privileges")
+        logger.info("This will uninstall Veyon from your system")
         
         # Step 1: Stop the service
-        logger.info("Step 1: Stopping Veyon service...")
-        stop_veyon_service()
+        logger.info("Step 1: Attempting to stop Veyon service...")
+        try:
+            result = subprocess.run(
+                ['sc', 'stop', 'VeyonService'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                logger.info("Veyon service stopped")
+                time.sleep(2)
+            else:
+                logger.info("Service may not be running or already stopped")
+        except:
+            logger.info("Could not stop service - continuing anyway")
         
-        # Step 2: Find and run uninstaller
+        # Step 2: Run uninstaller with UAC
         logger.info("Step 2: Running uninstaller...")
         uninstaller_path = find_veyon_uninstaller()
         
-        if uninstaller_path:
-            run_uninstaller(uninstaller_path)
+        if not uninstaller_path:
+            logger.error("Uninstaller not found!")
+            logger.error("Veyon may not be installed or already removed")
+            raise Exception("Veyon uninstaller not found")
+        
+        uninstall_success = run_uninstaller_elevated(uninstaller_path)
+        
+        if not uninstall_success:
+            logger.warning("Uninstaller may have failed - check manually")
+        
+        logger.info("Waiting for uninstaller to complete cleanup...")
+        time.sleep(3)
+        
+        # Step 3: Ask user about data removal
+        logger.info("Step 3: ProgramData cleanup...")
+        
+        veyon_data_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon'
+        
+        if veyon_data_dir.exists():
+            print("\n" + "=" * 60)
+            print("ATTENTION: Veyon configuration and keys still exist")
+            print(f"Location: {veyon_data_dir}")
+            print("=" * 60)
             
-            # Wait for uninstaller to finish and files to be released
-            logger.info("Waiting for uninstaller to complete...")
-            time.sleep(5)
+            response = input("\nDo you want to remove ALL Veyon data (keys, config)? [y/N]: ").strip().lower()
+            
+            if response in ['y', 'yes']:
+                logger.info("User chose to remove ProgramData")
+                
+                remove_success = remove_programdata_elevated()
+                
+                if remove_success:
+                    logger.info("✓ All Veyon data has been removed")
+                else:
+                    logger.warning("Failed to remove ProgramData - may need manual cleanup")
+            else:
+                logger.info("User chose to keep ProgramData")
+                logger.info("Keys and configuration preserved at: " + str(veyon_data_dir))
         else:
-            logger.warning("Uninstaller not found - will try to clean up manually")
-        
-        # Step 3: Remove ProgramData (keys and config)
-        logger.info("Step 3: Removing ProgramData directory...")
-        remove_programdata()
-        
-        # Step 4: Remove installation directory if still present
-        logger.info("Step 4: Cleaning up installation directory...")
-        remove_program_files()
+            logger.info("ProgramData directory already removed by uninstaller")
         
         logger.info("uninstall: Completed successfully")
-        logger.info("Veyon has been completely removed from this system")
+        logger.info("Veyon has been removed from this system")
         
         return True
         
@@ -315,7 +227,6 @@ def uninstall_veyon():
         raise
 
 if __name__ == '__main__':
-    # If run directly, initialize logger
     from logger import init_logger
     init_logger()
     uninstall_veyon()
