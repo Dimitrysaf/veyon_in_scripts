@@ -273,7 +273,7 @@ def main():
         status = (
             f"{Fore.GREEN}Running as Administrator"
             if admin_status
-            else f"{Fore.YELLOW}⚠ Not running as Administrator"
+            else f"{Fore.YELLOW}Not running as Administrator"
         )
         print(f"{Fore.CYAN}menu.py: startup OK")
         print(status + Style.RESET_ALL + "\n")
@@ -281,7 +281,7 @@ def main():
         status = (
             "Running as Administrator"
             if admin_status
-            else "⚠ Not running as Administrator"
+            else "Not running as Administrator"
         )
         print("menu.py: startup OK")
         print(status + "\n")

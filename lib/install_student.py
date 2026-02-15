@@ -80,8 +80,53 @@ def distribute_keys_to_veyon(root_path):
 
     if not keys_source.exists():
         logger.error(f"Keys directory not found at: {keys_source}")
+        logger.error("=" * 70)
+        logger.error("STUDENT INSTALLATION REQUIRES TEACHER'S PUBLIC KEY")
+        logger.error("=" * 70)
+        print("\n" + "!" * 70)
+        print("ERROR: No keys directory found!")
+        print("!" * 70)
+        print("\nStudent installation requires the teacher's public key.")
+        print("\nTo fix this:")
+        print("  1. On the TEACHER computer:")
+        print("     - Run menu.py")
+        print("     - Choose option 1 (install_teacher.py)")
+        print("     - This creates keys in the 'keys/' directory")
+        print("")
+        print("  2. Copy the 'keys/' directory from teacher computer to:")
+        print(f"     {root_path / 'keys'}")
+        print("")
+        print("  3. The keys directory should contain:")
+        print("     keys/")
+        print("       └── public/")
+        print("           └── supervisor/")
+        print("               └── key")
+        print("")
+        print("  4. Re-run this student installation")
+        print("!" * 70)
+        input("\nPress Enter to continue...")
         return False
 
+    # Check if public key exists
+    public_key = keys_source / "public" / "supervisor" / "key"
+    if not public_key.exists():
+        logger.error(f"Public key not found at: {public_key}")
+        logger.error("Keys directory exists but public key is missing")
+        print("\n" + "!" * 70)
+        print("ERROR: Public key not found!")
+        print("!" * 70)
+        print(f"\nExpected location: {public_key}")
+        print("\nThe keys directory structure should be:")
+        print("  keys/")
+        print("    └── public/")
+        print("        └── supervisor/")
+        print("            └── key  ← This file is missing!")
+        print("\nPlease get the complete keys directory from the teacher computer.")
+        print("!" * 70)
+        input("\nPress Enter to continue...")
+        return False
+
+    logger.info(f"Found public key at: {public_key}")
     logger.info(f"Distributing keys to: {veyon_keys_destination}")
 
     try:
@@ -221,9 +266,16 @@ def install_student():
             local_installer.unlink()
 
         # Step 2: Distribute Keys
-        distribute_keys_to_veyon(root_dir)
+        keys_distributed = distribute_keys_to_veyon(root_dir)
 
-        logger.info("install_student: Process finished.")
+        if keys_distributed:
+            logger.info("install_student: Completed successfully")
+        else:
+            logger.warning("install_student: Completed but keys were not distributed")
+            logger.warning(
+                "You will need to manually import the teacher's public key using Veyon Configurator"
+            )
+
         return True
 
     except Exception as e:

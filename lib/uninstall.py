@@ -10,6 +10,7 @@ import sys
 import subprocess
 import time
 import ctypes
+import stat
 from pathlib import Path
 
 # Import logger
@@ -65,18 +66,31 @@ def run_uninstaller_elevated(uninstaller_path):
         logger.info("Already running as administrator - running uninstaller directly")
 
         try:
+            # Use Popen with DETACHED_PROCESS to properly track completion
+            DETACHED_PROCESS = 0x00000008
             process = subprocess.Popen(
                 [str(uninstaller_path), "/S"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                creationflags=DETACHED_PROCESS,
             )
-            logger.info("Uninstaller running... waiting for completion.")
-            process.wait()
+            logger.info("Uninstaller started... waiting for completion.")
+
+            # Wait for the process to complete
+            stdout, stderr = process.communicate(timeout=120)  # 2 minute timeout
             exit_code = process.returncode
 
             logger.info(f"Uninstaller exited with code {exit_code}")
+
+            if exit_code != 0:
+                logger.warning(f"Uninstaller returned non-zero exit code: {exit_code}")
+
             return exit_code == 0
 
+        except subprocess.TimeoutExpired:
+            logger.error("Uninstaller timed out after 120 seconds")
+            process.kill()
+            return False
         except Exception as e:
             logger.error(f"Failed to run uninstaller: {e}")
             return False
@@ -125,6 +139,19 @@ def run_uninstaller_elevated(uninstaller_path):
             return False
 
 
+def remove_readonly(func, path, excinfo):
+    """Error handler for shutil.rmtree to handle read-only files"""
+    logger = get_logger()
+    logger.debug(f"Removing read-only attribute from: {path}")
+
+    # Clear the read-only bit and try again
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception as e:
+        logger.warning(f"Still cannot delete {path}: {e}")
+
+
 def remove_programdata_elevated():
     """Remove ProgramData folder with UAC elevation (only if needed)"""
     logger = get_logger()
@@ -155,60 +182,96 @@ def remove_programdata_elevated():
         try:
             import shutil
 
-            shutil.rmtree(veyon_data_dir)
+            # First, try to remove read-only attributes from all files
+            logger.debug("Removing read-only attributes from files...")
+            try:
+                for root, dirs, files in os.walk(veyon_data_dir):
+                    for fname in files:
+                        full_path = os.path.join(root, fname)
+                        try:
+                            os.chmod(full_path, stat.S_IWRITE)
+                        except:
+                            pass
+            except Exception as e:
+                logger.debug(f"Error removing read-only attributes: {e}")
+
+            # Now try to remove the directory with error handler
+            shutil.rmtree(veyon_data_dir, onerror=remove_readonly)
             logger.info("ProgramData directory removed successfully")
             return True
+
+        except PermissionError as e:
+            logger.error(f"Permission denied even with admin rights: {e}")
+            logger.info("Attempting elevated PowerShell as fallback...")
+
+            # Fall back to PowerShell elevation
+            return remove_with_powershell_elevated(veyon_data_dir)
+
         except Exception as e:
             logger.error(f"Failed to remove directory: {e}")
-            return False
+            logger.info("Attempting elevated PowerShell as fallback...")
+
+            # Fall back to PowerShell elevation
+            return remove_with_powershell_elevated(veyon_data_dir)
     else:
         # Not admin - request elevation
         logger.info("UAC prompt will appear - please approve")
+        return remove_with_powershell_elevated(veyon_data_dir)
 
-        ps_command = f'Remove-Item -Path "{veyon_data_dir}" -Recurse -Force'
 
-        try:
-            import win32api
-            import win32event
-            import win32process
-            from win32com.shell import shell, shellcon
+def remove_with_powershell_elevated(veyon_data_dir):
+    """Remove directory using elevated PowerShell"""
+    logger = get_logger()
 
-            sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
-            sei = shell.ShellExecuteEx(
-                fMask=sei_mask,
-                lpVerb="runas",
-                lpFile="powershell.exe",
-                lpParameters=f'-NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"',
-                nShow=0,
-            )
+    # PowerShell command to force remove with all attributes cleared
+    ps_command = (
+        f'Get-ChildItem -Path "{veyon_data_dir}" -Recurse | '
+        f'ForEach-Object {{ $_.Attributes = "Normal" }}; '
+        f'Remove-Item -Path "{veyon_data_dir}" -Recurse -Force'
+    )
 
-            hProcess = sei["hProcess"]
+    try:
+        import win32api
+        import win32event
+        import win32process
+        from win32com.shell import shell, shellcon
 
-            if hProcess:
-                logger.info("Folder deletion launched with elevation")
-                logger.info("Waiting for deletion to complete...")
+        sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
+        sei = shell.ShellExecuteEx(
+            fMask=sei_mask,
+            lpVerb="runas",
+            lpFile="powershell.exe",
+            lpParameters=f'-NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"',
+            nShow=0,
+        )
 
-                win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+        hProcess = sei["hProcess"]
 
-                exit_code = win32process.GetExitCodeProcess(hProcess)
-                win32api.CloseHandle(hProcess)
+        if hProcess:
+            logger.info("Folder deletion launched with elevation")
+            logger.info("Waiting for deletion to complete...")
 
-                if exit_code == 0:
-                    logger.info("ProgramData directory removed successfully")
-                    return True
-                else:
-                    logger.warning(f"Deletion exited with code {exit_code}")
-                    return False
+            win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+
+            exit_code = win32process.GetExitCodeProcess(hProcess)
+            win32api.CloseHandle(hProcess)
+
+            if exit_code == 0:
+                logger.info("ProgramData directory removed successfully")
+                return True
             else:
-                raise Exception("Failed to get process handle")
+                logger.warning(f"Deletion exited with code {exit_code}")
+                return False
+        else:
+            raise Exception("Failed to get process handle")
 
-        except ImportError:
-            logger.error("pywin32 not available - cannot elevate deletion")
-            logger.error("Install pywin32: pip install pywin32")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to remove ProgramData: {e}")
-            return False
+    except ImportError:
+        logger.error("pywin32 not available - cannot elevate deletion")
+        logger.error("Install pywin32: pip install pywin32")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to remove ProgramData: {e}")
+        return False
 
 
 def uninstall_veyon():
