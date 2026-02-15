@@ -1,0 +1,3 @@
+# Python dependencies for Veyon Installer Suite
+requests>=2.31.0
+colorama>=0.4.6
