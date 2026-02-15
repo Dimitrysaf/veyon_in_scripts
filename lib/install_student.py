@@ -200,6 +200,16 @@ def install_student():
         # Check if already running as admin
         already_admin = is_admin()
 
+        # CRITICAL: Student computers should ONLY get the service, NOT the master application
+        # Use /NoMaster parameter to exclude Veyon Master component
+        # Reference: https://github.com/veyon/veyon/issues/510
+        install_params = "/S /NoMaster"
+
+        logger.info("Installing Veyon SERVICE ONLY (no master application)")
+        logger.info(
+            "Using /NoMaster parameter - master application is prohibited on student machines"
+        )
+
         if already_admin:
             # Already admin - install directly without UAC prompt
             logger.info("Already running as administrator - installing directly")
@@ -207,7 +217,7 @@ def install_student():
             if HAS_PYWIN32:
                 # Use CreateProcess for better control
                 process = subprocess.Popen(
-                    [str(local_installer), "/S", "/Service"],
+                    [str(local_installer)] + install_params.split(),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
@@ -220,7 +230,7 @@ def install_student():
             else:
                 # Fallback without pywin32
                 process = subprocess.Popen(
-                    [str(local_installer), "/S", "/Service"],
+                    [str(local_installer)] + install_params.split(),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
@@ -238,7 +248,7 @@ def install_student():
                     "fMask": shellcon.SEE_MASK_NOCLOSEPROCESS,
                     "lpVerb": "runas",
                     "lpFile": str(local_installer),
-                    "lpParameters": "/S /Service",
+                    "lpParameters": install_params,
                     "nShow": 1,
                 }
                 # Execute and get process handle
@@ -254,7 +264,7 @@ def install_student():
             else:
                 # Fallback if pywin32 is missing
                 ret = ctypes.windll.shell32.ShellExecuteW(
-                    None, "runas", str(local_installer), "/S /Service", None, 1
+                    None, "runas", str(local_installer), install_params, None, 1
                 )
                 if ret <= 32:
                     raise Exception(f"Installer failed to launch (Error Code: {ret})")
