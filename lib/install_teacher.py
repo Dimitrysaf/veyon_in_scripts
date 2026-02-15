@@ -76,6 +76,94 @@ def download_file_with_progress(url, destination):
     print()  # New line after progress
     logger.info(f"Download complete: {destination}")
 
+def generate_veyon_keys():
+    """Generate Veyon key pair using veyon-cli"""
+    logger = get_logger()
+    
+    logger.info("Generating Veyon key pair...")
+    
+    # Find veyon-cli.exe location
+    possible_paths = [
+        Path(os.environ.get('PROGRAMFILES', 'C:/Program Files')) / 'Veyon' / 'veyon-cli.exe',
+        Path(os.environ.get('PROGRAMFILES(X86)', 'C:/Program Files (x86)')) / 'Veyon' / 'veyon-cli.exe',
+        Path('C:/Program Files/Veyon/veyon-cli.exe'),
+    ]
+    
+    veyon_cli = None
+    for path in possible_paths:
+        if path.exists():
+            veyon_cli = path
+            logger.info(f"Found veyon-cli at: {veyon_cli}")
+            break
+    
+    if not veyon_cli:
+        logger.error("veyon-cli.exe not found! Veyon may not be installed correctly.")
+        return False
+    
+    # Generate key pair with name "supervisor"
+    # Command: veyon-cli authkeys create supervisor
+    max_attempts = 5
+    attempt = 0
+    
+    while attempt < max_attempts:
+        attempt += 1
+        logger.info(f"Key generation attempt {attempt}/{max_attempts}...")
+        
+        try:
+            # Create key pair
+            result = subprocess.run(
+                [str(veyon_cli), 'authkeys', 'create', 'supervisor'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                logger.info("Key pair created successfully!")
+                logger.debug(f"Output: {result.stdout}")
+                
+                # Verify keys were created
+                keys_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
+                private_key = keys_dir / 'private' / 'supervisor' / 'key'
+                public_key = keys_dir / 'public' / 'supervisor' / 'key'
+                
+                if private_key.exists() and public_key.exists():
+                    logger.info(f"✓ Private key created: {private_key}")
+                    logger.info(f"✓ Public key created: {public_key}")
+                    return True
+                else:
+                    logger.warning("Keys created but files not found at expected location")
+                    logger.warning(f"Expected private key: {private_key}")
+                    logger.warning(f"Expected public key: {public_key}")
+                    time.sleep(2)
+                    continue
+            else:
+                logger.warning(f"Key generation failed with exit code {result.returncode}")
+                logger.warning(f"Error: {result.stderr}")
+                
+                # Check if keys already exist
+                keys_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
+                private_key = keys_dir / 'private' / 'supervisor' / 'key'
+                public_key = keys_dir / 'public' / 'supervisor' / 'key'
+                
+                if private_key.exists() and public_key.exists():
+                    logger.info("Keys already exist - using existing keys")
+                    return True
+                
+                time.sleep(2)
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"Key generation timed out on attempt {attempt}")
+            time.sleep(2)
+        except Exception as e:
+            logger.error(f"Key generation error on attempt {attempt}: {e}")
+            time.sleep(2)
+    
+    logger.error(f"Failed to generate keys after {max_attempts} attempts!")
+    logger.error("You may need to manually generate keys using Veyon Configurator")
+    return False
+
+
 def copy_veyon_keys(root_path):
     """Copy entire Veyon keys directory to PWD"""
     logger = get_logger()
@@ -84,8 +172,20 @@ def copy_veyon_keys(root_path):
     veyon_keys_source = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
     
     if not veyon_keys_source.exists():
-        logger.warning(f"Veyon keys directory not found at: {veyon_keys_source}")
-        logger.warning("Keys may not have been generated yet. Run Veyon Configurator to generate keys.")
+        logger.error(f"Veyon keys directory not found at: {veyon_keys_source}")
+        logger.error("Keys should have been generated but directory doesn't exist!")
+        return False
+    
+    # Check that keys actually exist
+    private_key = veyon_keys_source / 'private' / 'supervisor' / 'key'
+    public_key = veyon_keys_source / 'public' / 'supervisor' / 'key'
+    
+    if not private_key.exists():
+        logger.error(f"Private key not found at: {private_key}")
+        return False
+    
+    if not public_key.exists():
+        logger.error(f"Public key not found at: {public_key}")
         return False
     
     # Destination is PWD/keys/
@@ -115,10 +215,20 @@ def copy_veyon_keys(root_path):
                 relative_path = file.relative_to(keys_destination)
                 logger.debug(f"  Copied: keys/{relative_path}")
         
+        # Final verification
+        dest_private = keys_destination / 'private' / 'supervisor' / 'key'
+        dest_public = keys_destination / 'public' / 'supervisor' / 'key'
+        
+        if not dest_private.exists() or not dest_public.exists():
+            logger.error("Keys copied but verification failed!")
+            return False
+        
+        logger.info("✓ Keys verified at destination")
         return True
         
     except Exception as e:
         logger.error(f"Failed to copy keys directory: {e}")
+        logger.exception("Full traceback:")
         return False
 
 def install_teacher():
@@ -345,9 +455,28 @@ def install_teacher():
         # Wait a moment for installation to complete
         time.sleep(2)
         
-        # Copy keys
-        logger.info("Attempting to copy Veyon keys...")
-        copy_veyon_keys(root_dir)
+        # Generate Veyon keys - retry until successful
+        logger.info("Generating Veyon authentication keys...")
+        
+        keys_generated = generate_veyon_keys()
+        
+        if not keys_generated:
+            raise Exception(
+                "CRITICAL ERROR: Failed to generate Veyon keys!\n"
+                "The installation cannot continue without keys.\n"
+                "Please check the logs and try again."
+            )
+        
+        # Copy keys to PWD
+        logger.info("Copying Veyon keys to working directory...")
+        keys_copied = copy_veyon_keys(root_dir)
+        
+        if not keys_copied:
+            raise Exception(
+                "CRITICAL ERROR: Failed to copy Veyon keys!\n"
+                "Keys were generated but could not be copied to PWD.\n"
+                "Check permissions and try again."
+            )
         
         logger.info("install_teacher: Completed successfully")
         return True

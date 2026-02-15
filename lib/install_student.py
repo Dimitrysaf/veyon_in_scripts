@@ -3,8 +3,8 @@ install_student.py - Veyon Student Installation Script
 - Fetches latest Veyon release from GitHub API
 - Downloads win64 installer
 - Verifies SHA256 checksum
-- Installs silently
-- Copies public keys only (students don't need private keys)
+- Installs silently WITHOUT Master component (client only)
+- Distributes keys FROM PWD/keys TO C:\ProgramData\Veyon\keys
 """
 
 import os
@@ -76,51 +76,54 @@ def download_file_with_progress(url, destination):
     print()  # New line after progress
     logger.info(f"Download complete: {destination}")
 
-def copy_public_keys_only(root_path):
-    """Copy entire Veyon keys directory to PWD (students get same structure)"""
+def distribute_keys_to_veyon(root_path):
+    """Copy keys FROM PWD TO ProgramData (reverse of teacher)"""
     logger = get_logger()
     
-    # Veyon keys are stored in C:\ProgramData\Veyon\keys
-    veyon_keys_source = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
+    # Source is PWD/keys/
+    keys_source = root_path / 'keys'
     
-    if not veyon_keys_source.exists():
-        logger.warning(f"Veyon keys directory not found at: {veyon_keys_source}")
-        logger.warning("For student machines, you should import the teacher's public key using Veyon Configurator.")
+    # Destination is C:\ProgramData\Veyon\keys
+    veyon_keys_destination = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
+    
+    if not keys_source.exists():
+        logger.error(f"Keys directory not found at: {keys_source}")
+        logger.error("Please copy the 'keys' folder from the teacher machine to this directory first!")
         return False
     
-    # Destination is PWD/keys/
-    keys_destination = root_path / 'keys'
-    
-    logger.info(f"Copying keys from: {veyon_keys_source}")
-    logger.info(f"Copying keys to: {keys_destination}")
+    logger.info(f"Distributing keys from: {keys_source}")
+    logger.info(f"Distributing keys to: {veyon_keys_destination}")
     
     try:
-        # Remove existing destination if it exists
-        if keys_destination.exists():
-            shutil.rmtree(keys_destination)
-            logger.debug(f"Removed existing keys directory at {keys_destination}")
+        # Create parent directory if it doesn't exist
+        veyon_keys_destination.parent.mkdir(parents=True, exist_ok=True)
         
-        # Copy entire directory tree
-        shutil.copytree(veyon_keys_source, keys_destination)
+        # Remove existing destination if it exists
+        if veyon_keys_destination.exists():
+            shutil.rmtree(veyon_keys_destination)
+            logger.debug(f"Removed existing keys at {veyon_keys_destination}")
+        
+        # Copy entire directory tree FROM PWD TO ProgramData
+        shutil.copytree(keys_source, veyon_keys_destination)
         
         # Count copied files
-        copied_files = list(keys_destination.rglob('*'))
+        copied_files = list(veyon_keys_destination.rglob('*'))
         file_count = len([f for f in copied_files if f.is_file()])
         
-        logger.info(f"Successfully copied {file_count} file(s) from Veyon keys directory")
+        logger.info(f"Successfully distributed {file_count} file(s) to Veyon")
         
         # Log what was copied
         for file in copied_files:
             if file.is_file():
-                relative_path = file.relative_to(keys_destination)
-                logger.debug(f"  Copied: keys/{relative_path}")
+                relative_path = file.relative_to(veyon_keys_destination)
+                logger.debug(f"  Distributed: {relative_path}")
         
-        logger.info("NOTE: Student machines should only have the teacher's PUBLIC key")
+        logger.info("Keys distributed successfully to Veyon installation")
         
         return True
         
     except Exception as e:
-        logger.error(f"Failed to copy keys directory: {e}")
+        logger.error(f"Failed to distribute keys: {e}")
         return False
 
 def install_student():
@@ -236,8 +239,13 @@ def install_student():
         shutil.copy2(output_file, temp_installer)
         logger.info(f"Copied installer to: {temp_installer}")
         
-        # Run installer silently
+        # Run installer silently (WITHOUT Master component)
+        # Note: Veyon installer automatically detects role based on configuration
+        # Using /Service flag installs the client service for remote control
+        # Master component is controlled separately through Veyon Configurator
         logger.info(f"Starting silent installation: {temp_installer}")
+        logger.info("Installing Veyon CLIENT only (for student machines)")
+        logger.info("The Master/Teacher component will NOT be installed")
         
         if sys.platform == 'win32':
             # Windows silent install - need elevation
@@ -254,6 +262,7 @@ def install_student():
                 logger.warning("The installer requires elevation. Attempting to elevate...")
                 
                 # Use ShellExecute with runas to trigger UAC prompt
+                # /S = silent, /ApplyConfig = use default config (client only, no master)
                 try:
                     import win32api
                     import win32event
@@ -261,12 +270,14 @@ def install_student():
                     from win32com.shell import shell, shellcon
                     
                     # Get process info structure
+                    # For STUDENT mode: Install client only, no Master
+                    # Veyon installer flags: /S (silent), /Service (0=no service, 1=yes)
                     sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
                     sei = shell.ShellExecuteEx(
                         fMask=sei_mask,
                         lpVerb='runas',
                         lpFile=str(temp_installer),
-                        lpParameters='/S',
+                        lpParameters='/S /Service',  # Install service but student mode
                         nShow=1
                     )
                     
@@ -298,7 +309,7 @@ def install_student():
                         None, 
                         "runas",
                         str(temp_installer),
-                        "/S",
+                        "/S /Service",  # Install service for student mode
                         None,
                         1
                     )
@@ -320,8 +331,9 @@ def install_student():
                     )
             else:
                 # Already admin, run normally
+                logger.info("Running as administrator - installing in STUDENT mode")
                 process = subprocess.Popen(
-                    [str(temp_installer), '/S'],
+                    [str(temp_installer), '/S', '/Service'],  # Student mode with service
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE
                 )
@@ -347,12 +359,12 @@ def install_student():
         # Wait a moment for installation to complete
         time.sleep(2)
         
-        # Copy public keys only
-        logger.info("Attempting to copy public keys...")
-        copy_public_keys_only(root_dir)
+        # Distribute keys from PWD to Veyon installation
+        logger.info("Distributing keys to Veyon installation...")
+        distribute_keys_to_veyon(root_dir)
         
         logger.info("install_student: Completed successfully")
-        logger.info("NOTE: Import teacher's public key using Veyon Configurator")
+        logger.info("Student machine configured with keys from teacher")
         return True
         
     except Exception as e:
