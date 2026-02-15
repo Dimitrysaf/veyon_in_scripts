@@ -77,10 +77,46 @@ def download_file_with_progress(url, destination):
     logger.info(f"Download complete: {destination}")
 
 def generate_veyon_keys():
-    """Generate Veyon key pair using veyon-cli"""
+    """Generate Veyon key pair using veyon-cli or verify existing keys"""
     logger = get_logger()
     
-    logger.info("Generating Veyon key pair...")
+    logger.info("Checking for Veyon keys...")
+    
+    # Check if keys already exist
+    keys_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
+    private_key = keys_dir / 'private' / 'supervisor' / 'key'
+    public_key = keys_dir / 'public' / 'supervisor' / 'key'
+    
+    # Comprehensive check - look for ANY key files
+    if keys_dir.exists():
+        # Check for supervisor keys specifically
+        if private_key.exists() and public_key.exists():
+            logger.info("✓ Supervisor keys already exist")
+            logger.info(f"  Private: {private_key}")
+            logger.info(f"  Public: {public_key}")
+            return True
+        
+        # Check if ANY keys exist (may have different names)
+        all_keys = list(keys_dir.rglob('*'))
+        key_files = [f for f in all_keys if f.is_file()]
+        
+        if len(key_files) > 0:
+            logger.info(f"Found {len(key_files)} existing key file(s)")
+            
+            # Check if supervisor keys exist with different structure
+            for key_file in key_files:
+                logger.debug(f"  Found: {key_file}")
+            
+            # If we have both private and public keys (anywhere), use them
+            private_keys = [f for f in key_files if 'private' in str(f).lower()]
+            public_keys = [f for f in key_files if 'public' in str(f).lower()]
+            
+            if private_keys and public_keys:
+                logger.info("✓ Found existing private and public keys")
+                return True
+    
+    # Keys don't exist - need to generate them
+    logger.info("No keys found - generating new supervisor key pair...")
     
     # Find veyon-cli.exe location
     possible_paths = [
@@ -101,8 +137,7 @@ def generate_veyon_keys():
         return False
     
     # Generate key pair with name "supervisor"
-    # Command: veyon-cli authkeys create supervisor
-    max_attempts = 5
+    max_attempts = 3
     attempt = 0
     
     while attempt < max_attempts:
@@ -118,49 +153,71 @@ def generate_veyon_keys():
                 timeout=30
             )
             
-            if result.returncode == 0:
-                logger.info("Key pair created successfully!")
-                logger.debug(f"Output: {result.stdout}")
+            # Check for "already exist" error
+            if "already exist" in result.stderr.lower():
+                logger.info("Keys already exist according to veyon-cli")
                 
-                # Verify keys were created
-                keys_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
-                private_key = keys_dir / 'private' / 'supervisor' / 'key'
-                public_key = keys_dir / 'public' / 'supervisor' / 'key'
-                
+                # Keys exist but we didn't detect them - verify again
                 if private_key.exists() and public_key.exists():
-                    logger.info(f"✓ Private key created: {private_key}")
-                    logger.info(f"✓ Public key created: {public_key}")
+                    logger.info("✓ Verified keys exist")
                     return True
                 else:
-                    logger.warning("Keys created but files not found at expected location")
-                    logger.warning(f"Expected private key: {private_key}")
-                    logger.warning(f"Expected public key: {public_key}")
+                    # Keys might be elsewhere - do comprehensive search
+                    logger.info("Searching for keys in Veyon directory...")
+                    all_keys = list(keys_dir.rglob('*')) if keys_dir.exists() else []
+                    key_files = [f for f in all_keys if f.is_file()]
+                    
+                    if len(key_files) >= 2:  # At least private + public
+                        logger.info(f"✓ Found {len(key_files)} key files")
+                        return True
+                    else:
+                        logger.warning("veyon-cli says keys exist but cannot find them")
+                        logger.warning("Attempting to delete and regenerate...")
+                        
+                        # Try to delete existing keys
+                        delete_result = subprocess.run(
+                            [str(veyon_cli), 'authkeys', 'delete', 'supervisor'],
+                            capture_output=True,
+                            text=True,
+                            timeout=30
+                        )
+                        logger.debug(f"Delete result: {delete_result.returncode}")
+                        time.sleep(1)
+                        continue
+            
+            if result.returncode == 0:
+                logger.info("✓ Key pair created successfully")
+                
+                # Verify keys were created
+                time.sleep(1)  # Give filesystem time to sync
+                
+                if private_key.exists() and public_key.exists():
+                    logger.info(f"✓ Private key: {private_key}")
+                    logger.info(f"✓ Public key: {public_key}")
+                    return True
+                else:
+                    logger.warning("Command succeeded but keys not found - retrying...")
                     time.sleep(2)
                     continue
             else:
-                logger.warning(f"Key generation failed with exit code {result.returncode}")
-                logger.warning(f"Error: {result.stderr}")
-                
-                # Check if keys already exist
-                keys_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
-                private_key = keys_dir / 'private' / 'supervisor' / 'key'
-                public_key = keys_dir / 'public' / 'supervisor' / 'key'
-                
-                if private_key.exists() and public_key.exists():
-                    logger.info("Keys already exist - using existing keys")
-                    return True
-                
+                logger.warning(f"Exit code: {result.returncode}")
+                if result.stderr:
+                    logger.warning(f"Error: {result.stderr.strip()}")
                 time.sleep(2)
                 
         except subprocess.TimeoutExpired:
             logger.error(f"Key generation timed out on attempt {attempt}")
             time.sleep(2)
         except Exception as e:
-            logger.error(f"Key generation error on attempt {attempt}: {e}")
+            logger.error(f"Key generation error: {e}")
             time.sleep(2)
     
-    logger.error(f"Failed to generate keys after {max_attempts} attempts!")
-    logger.error("You may need to manually generate keys using Veyon Configurator")
+    # Last resort - check one more time if keys exist
+    if private_key.exists() and public_key.exists():
+        logger.info("✓ Keys found after all attempts")
+        return True
+    
+    logger.error(f"Failed to generate or find keys after {max_attempts} attempts")
     return False
 
 
@@ -197,11 +254,29 @@ def copy_veyon_keys(root_path):
     try:
         # Remove existing destination if it exists
         if keys_destination.exists():
-            shutil.rmtree(keys_destination)
-            logger.debug(f"Removed existing keys directory at {keys_destination}")
+            try:
+                shutil.rmtree(keys_destination)
+                logger.debug(f"Removed existing keys directory at {keys_destination}")
+            except PermissionError:
+                logger.warning("Permission denied removing old keys directory")
+                logger.info("Attempting to fix permissions with UAC...")
+                
+                # Try to remove with elevated PowerShell
+                if not remove_directory_elevated(keys_destination):
+                    logger.error("Failed to remove old keys directory even with elevation")
+                    return False
         
         # Copy entire directory tree
-        shutil.copytree(veyon_keys_source, keys_destination)
+        try:
+            shutil.copytree(veyon_keys_source, keys_destination)
+        except PermissionError:
+            logger.warning("Permission denied copying keys")
+            logger.info("Attempting to copy with UAC elevation...")
+            
+            # Try to copy with elevated PowerShell
+            if not copy_directory_elevated(veyon_keys_source, keys_destination):
+                logger.error("Failed to copy keys even with elevation")
+                return False
         
         # Count copied files
         copied_files = list(keys_destination.rglob('*'))
@@ -229,6 +304,90 @@ def copy_veyon_keys(root_path):
     except Exception as e:
         logger.error(f"Failed to copy keys directory: {e}")
         logger.exception("Full traceback:")
+        return False
+
+
+def remove_directory_elevated(directory_path):
+    """Remove directory with UAC elevation using PowerShell"""
+    logger = get_logger()
+    
+    logger.info(f"UAC prompt will appear to remove: {directory_path}")
+    
+    ps_command = f'Remove-Item -Path "{directory_path}" -Recurse -Force'
+    
+    try:
+        import win32api
+        import win32event
+        import win32process
+        from win32com.shell import shell, shellcon
+        
+        sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
+        sei = shell.ShellExecuteEx(
+            fMask=sei_mask,
+            lpVerb='runas',
+            lpFile='powershell.exe',
+            lpParameters=f'-NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"',
+            nShow=0
+        )
+        
+        hProcess = sei['hProcess']
+        
+        if hProcess:
+            win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+            exit_code = win32process.GetExitCodeProcess(hProcess)
+            win32api.CloseHandle(hProcess)
+            
+            return exit_code == 0
+        
+        return False
+        
+    except ImportError:
+        logger.error("pywin32 not available - cannot elevate")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to elevate removal: {e}")
+        return False
+
+
+def copy_directory_elevated(source_path, dest_path):
+    """Copy directory with UAC elevation using PowerShell"""
+    logger = get_logger()
+    
+    logger.info(f"UAC prompt will appear to copy keys")
+    
+    ps_command = f'Copy-Item -Path "{source_path}" -Destination "{dest_path}" -Recurse -Force'
+    
+    try:
+        import win32api
+        import win32event
+        import win32process
+        from win32com.shell import shell, shellcon
+        
+        sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
+        sei = shell.ShellExecuteEx(
+            fMask=sei_mask,
+            lpVerb='runas',
+            lpFile='powershell.exe',
+            lpParameters=f'-NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"',
+            nShow=0
+        )
+        
+        hProcess = sei['hProcess']
+        
+        if hProcess:
+            win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+            exit_code = win32process.GetExitCodeProcess(hProcess)
+            win32api.CloseHandle(hProcess)
+            
+            return exit_code == 0
+        
+        return False
+        
+    except ImportError:
+        logger.error("pywin32 not available - cannot elevate")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to elevate copy: {e}")
         return False
 
 def install_teacher():

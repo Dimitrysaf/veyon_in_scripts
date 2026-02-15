@@ -30,7 +30,7 @@ def find_veyon_uninstaller():
             logger.info(f"Found uninstaller at: {path}")
             return path
     
-    logger.error("Veyon uninstaller not found!")
+    # Just return None silently - caller will handle it
     return None
 
 def run_uninstaller_elevated(uninstaller_path):
@@ -176,17 +176,25 @@ def uninstall_veyon():
         uninstaller_path = find_veyon_uninstaller()
         
         if not uninstaller_path:
-            logger.error("Uninstaller not found!")
-            logger.error("Veyon may not be installed or already removed")
-            raise Exception("Veyon uninstaller not found")
-        
-        uninstall_success = run_uninstaller_elevated(uninstaller_path)
-        
-        if not uninstall_success:
-            logger.warning("Uninstaller may have failed - check manually")
-        
-        logger.info("Waiting for uninstaller to complete cleanup...")
-        time.sleep(3)
+            logger.warning("Veyon uninstaller not found - Veyon may not be installed")
+            
+            # Check if data folder exists
+            veyon_data_dir = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon'
+            if veyon_data_dir.exists():
+                logger.info("However, Veyon data folder exists - offering to clean it up")
+            else:
+                logger.info("No Veyon installation or data found")
+                logger.info("uninstall: Nothing to remove")
+                return True  # Success - nothing to do
+        else:
+            # Run uninstaller with UAC
+            uninstall_success = run_uninstaller_elevated(uninstaller_path)
+            
+            if not uninstall_success:
+                logger.warning("Uninstaller may have failed - continuing with cleanup")
+            
+            logger.info("Waiting for uninstaller to complete cleanup...")
+            time.sleep(3)
         
         # Step 3: Ask user about data removal
         logger.info("Step 3: ProgramData cleanup...")
