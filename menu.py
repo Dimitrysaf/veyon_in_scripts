@@ -34,6 +34,82 @@ init_logger(root_path=SCRIPT_DIR)
 logger = get_logger()
 
 
+def is_admin():
+    """Check if script is running with administrator privileges"""
+    if sys.platform != "win32":
+        return True  # On non-Windows, assume we have needed privileges
+
+    try:
+        import ctypes
+
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+
+def relaunch_as_admin():
+    """Relaunch the current script with administrator privileges"""
+    logger.info("Attempting to relaunch as administrator...")
+
+    if sys.platform != "win32":
+        print("This feature is only available on Windows.")
+        return False
+
+    try:
+        import ctypes
+
+        # Get the path to the Python executable and this script
+        script = os.path.abspath(sys.argv[0])
+        params = " ".join(
+            [f'"{arg}"' for arg in sys.argv[1:]]
+        )  # Preserve command-line arguments
+
+        # Use ShellExecute with 'runas' to trigger UAC
+        if COLORS:
+            print(Fore.YELLOW + "\nRelaunching with administrator privileges...")
+            print(Fore.YELLOW + "Please approve the UAC prompt." + Style.RESET_ALL)
+        else:
+            print("\nRelaunching with administrator privileges...")
+            print("Please approve the UAC prompt.")
+
+        logger.info(f"Relaunching: {sys.executable} {script} {params}")
+
+        # Execute with elevation
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            sys.executable,
+            f'"{script}" {params}',
+            None,
+            1,  # SW_SHOWNORMAL
+        )
+
+        if ret > 32:  # Success
+            logger.info(
+                "Successfully relaunched as administrator. Exiting current instance."
+            )
+            sys.exit(0)  # Exit the current non-admin instance
+        else:
+            logger.error(f"Failed to relaunch as administrator (Error code: {ret})")
+            if COLORS:
+                print(Fore.RED + f"\nFailed to relaunch (Error code: {ret})")
+                print(
+                    Fore.YELLOW + "UAC may have been denied by user." + Style.RESET_ALL
+                )
+            else:
+                print(f"\nFailed to relaunch (Error code: {ret})")
+                print("UAC may have been denied by user.")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error relaunching as administrator: {e}")
+        if COLORS:
+            print(Fore.RED + f"\nError: {e}" + Style.RESET_ALL)
+        else:
+            print(f"\nError: {e}")
+        return False
+
+
 def clear_screen():
     """Clear the terminal screen"""
     os.system("cls" if os.name == "nt" else "clear")
@@ -111,12 +187,25 @@ def display_menu():
                 print(f"  {i}) {script.name:<30} {description}")
 
     print()
+
+    # Show admin status in menu
+    admin_status = is_admin()
+
     if COLORS:
         print(Fore.LIGHTBLACK_EX + "  r) Reload menu")
+
+        if not admin_status:
+            # Only show "Relaunch as Admin" option if not already admin
+            print(Fore.LIGHTMAGENTA_EX + "  a) Relaunch as Administrator")
+
         print(Fore.LIGHTBLACK_EX + "  e) Run external script by path")
         print(Fore.MAGENTA + "  0) Exit")
     else:
         print("  r) Reload menu")
+
+        if not admin_status:
+            print("  a) Relaunch as Administrator")
+
         print("  e) Run external script by path")
         print("  0) Exit")
     print()
@@ -178,27 +267,20 @@ def main():
     logger.info("Menu started")
 
     # Check admin status
-    is_admin = False
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-        except:
-            pass
+    admin_status = is_admin()
 
     if COLORS:
         status = (
-            f"{Fore.GREEN}✓ Running as Administrator"
-            if is_admin
+            f"{Fore.GREEN}Running as Administrator"
+            if admin_status
             else f"{Fore.YELLOW}⚠ Not running as Administrator"
         )
         print(f"{Fore.CYAN}menu.py: startup OK")
         print(status + Style.RESET_ALL + "\n")
     else:
         status = (
-            "✓ Running as Administrator"
-            if is_admin
+            "Running as Administrator"
+            if admin_status
             else "⚠ Not running as Administrator"
         )
         print("menu.py: startup OK")
@@ -210,10 +292,12 @@ def main():
 
             if COLORS:
                 choice = input(
-                    Fore.YELLOW + "Choose an option (number/r/e/0): " + Style.RESET_ALL
+                    Fore.YELLOW
+                    + "Choose an option (number/r/a/e/0): "
+                    + Style.RESET_ALL
                 )
             else:
-                choice = input("Choose an option (number/r/e/0): ")
+                choice = input("Choose an option (number/r/a/e/0): ")
 
             logger.debug(f"User choice: {choice}")
 
@@ -225,6 +309,20 @@ def main():
             # Reload menu
             elif choice.lower() == "r":
                 continue
+
+            # Relaunch as Administrator
+            elif choice.lower() == "a":
+                if admin_status:
+                    if COLORS:
+                        print(Fore.GREEN + "\nAlready running as Administrator!")
+                    else:
+                        print("\nAlready running as Administrator!")
+                    input("\nPress Enter to continue...")
+                else:
+                    # Attempt to relaunch as admin
+                    relaunch_as_admin()
+                    # If we get here, relaunch failed - continue in current instance
+                    input("\nPress Enter to continue...")
 
             # Run external script
             elif choice.lower() == "e":
