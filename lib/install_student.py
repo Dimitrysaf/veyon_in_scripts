@@ -286,6 +286,45 @@ def install_student():
                 "You will need to manually import the teacher's public key using Veyon Configurator"
             )
 
+        # Prompt for reboot
+        print("\n" + "=" * 70)
+        print("Installation completed successfully!")
+        print("=" * 70)
+        print("\nA system reboot is recommended for changes to take effect.")
+
+        response = input("\nReboot now? [Y/n]: ").strip().lower()
+
+        if response in ["y", "yes", ""]:
+            logger.info("User chose to reboot now")
+            print("\nRebooting in 5 seconds...")
+            logger.info("Initiating system reboot...")
+
+            try:
+                # Schedule immediate reboot
+                subprocess.run(
+                    [
+                        "shutdown",
+                        "/r",
+                        "/t",
+                        "5",
+                        "/c",
+                        "Veyon installation completed. Rebooting...",
+                    ],
+                    check=False,
+                )
+                logger.info("Reboot scheduled successfully")
+                print("System will reboot in 5 seconds. Saving logs...")
+                time.sleep(2)  # Give time for logs to flush
+            except Exception as e:
+                logger.error(f"Failed to schedule reboot: {e}")
+                print(f"Failed to schedule reboot: {e}")
+                print("Please reboot manually.")
+        else:
+            logger.info("User declined reboot")
+            print(
+                "\nPlease remember to reboot your computer later for changes to take effect."
+            )
+
         return True
 
     except Exception as e:

@@ -364,16 +364,75 @@ def get_uptime():
     return "Unknown"
 
 
+def export_to_txt(computer_name, ips, mac_address):
+    """Export essential computer info to txt file in comps directory"""
+    logger = get_logger()
+
+    try:
+        # Get script directory and create comps directory
+        script_dir = Path(__file__).parent
+        root_dir = script_dir.parent
+        comps_dir = root_dir / "comps"
+        comps_dir.mkdir(exist_ok=True)
+
+        # Create filename
+        filename = f"{computer_name}.txt"
+        filepath = comps_dir / filename
+
+        # Write essential info
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("=" * 50 + "\n")
+            f.write(f"Computer Information Export\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 50 + "\n\n")
+
+            f.write(f"Computer Name: {computer_name}\n")
+            f.write(f"MAC Address:   {mac_address}\n")
+
+            if len(ips) == 1:
+                f.write(f"IP Address:    {ips[0]}\n")
+            else:
+                f.write(f"IP Addresses:\n")
+                for ip in ips:
+                    f.write(f"  - {ip}\n")
+
+            f.write("\n" + "=" * 50 + "\n")
+
+        logger.info(f"Exported computer info to: {filepath}")
+
+        if COLORS:
+            print(
+                f"\n{Fore.GREEN}✓ Computer info exported to: {Fore.CYAN}{filepath}{Style.RESET_ALL}"
+            )
+        else:
+            print(f"\n✓ Computer info exported to: {filepath}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to export computer info: {e}")
+        if COLORS:
+            print(f"\n{Fore.RED}✗ Failed to export: {e}{Style.RESET_ALL}")
+        else:
+            print(f"\n✗ Failed to export: {e}")
+        return False
+
+
 def show_computer_info():
     """Main function to display all computer information"""
     logger = get_logger()
     logger.info("info: Gathering computer information...")
 
+    # Gather info for export
+    computer_name = get_computer_name()
+    ips = get_ip_addresses()
+    mac_address = get_mac_address()
+
     print(get_header("COMPUTER INFORMATION"))
 
     # Basic Information
     print(get_header("Basic Information"))
-    print(get_value_line("Computer Name:", get_computer_name()))
+    print(get_value_line("Computer Name:", computer_name))
     print(get_value_line("System Model:", get_system_model()))
     print(get_value_line("Processor:", get_processor_info()))
     print(get_value_line("RAM:", get_ram_info()))
@@ -385,12 +444,11 @@ def show_computer_info():
 
     # Network Information
     print(get_header("Network Information"))
-    ips = get_ip_addresses()
     for i, ip in enumerate(ips):
         label = "IP Address:" if i == 0 else ""
         print(get_value_line(label, ip))
 
-    print(get_value_line("MAC Address:", get_mac_address()))
+    print(get_value_line("MAC Address:", mac_address))
 
     # Operating System
     print(get_header("Operating System"))
@@ -418,6 +476,9 @@ def show_computer_info():
     print(get_value_line("Current Time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
     print("\n" + "=" * 70)
+
+    # Export to txt file
+    export_to_txt(computer_name, ips, mac_address)
 
     logger.info("info: Information display completed")
 

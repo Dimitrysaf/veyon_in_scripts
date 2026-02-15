@@ -198,7 +198,6 @@ def display_menu():
             # Only show "Relaunch as Admin" option if not already admin
             print(Fore.LIGHTMAGENTA_EX + "  a) Relaunch as Administrator")
 
-        print(Fore.LIGHTBLACK_EX + "  i) Show Computer Information")
         print(Fore.LIGHTBLACK_EX + "  e) Run external script by path")
         print(Fore.MAGENTA + "  0) Exit")
     else:
@@ -207,7 +206,6 @@ def display_menu():
         if not admin_status:
             print("  a) Relaunch as Administrator")
 
-        print("  i) Show Computer Information")
         print("  e) Run external script by path")
         print("  0) Exit")
     print()
@@ -297,11 +295,11 @@ def main():
             if COLORS:
                 choice = input(
                     Fore.YELLOW
-                    + "Choose an option (number/r/a/i/e/0): "
+                    + "Choose an option (number/r/a/e/0): "
                     + Style.RESET_ALL
                 )
             else:
-                choice = input("Choose an option (number/r/a/i/e/0): ")
+                choice = input("Choose an option (number/r/a/e/0): ")
 
             logger.debug(f"User choice: {choice}")
 
@@ -327,19 +325,6 @@ def main():
                     relaunch_as_admin()
                     # If we get here, relaunch failed - continue in current instance
                     input("\nPress Enter to continue...")
-
-            # Show Computer Information
-            elif choice.lower() == "i":
-                logger.info("Running info.py to show computer information")
-                info_script = LIB_DIR / "info.py"
-                if info_script.exists():
-                    run_script(info_script)
-                else:
-                    if COLORS:
-                        print(Fore.RED + f"\nError: info.py not found at {info_script}")
-                    else:
-                        print(f"\nError: info.py not found at {info_script}")
-                input("\nPress Enter to continue...")
 
             # Run external script
             elif choice.lower() == "e":
