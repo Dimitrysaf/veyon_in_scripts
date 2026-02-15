@@ -9,156 +9,92 @@ cd /d "%~dp0"
 
 set "SCRIPT_NAME=VeyonSetup.ps1"
 set "LOG_FILE=%~dp0Launcher.log"
-set "TIMESTAMP=%date% %time%"
+set "NEED_PAUSE=0"
+set "PS_EXIT_CODE=0"
 
-:: Initialize log file
-if not exist "%LOG_FILE%" (
-    type nul > "%LOG_FILE%"
-)
-
-:: ============================================================================
-:: Functions
-:: ============================================================================
-
-:LogMessage
-:: Usage: call :LogMessage "message" "level"
-:: Level: INFO, WARN, ERROR, SUCCESS
-set "msg=%~1"
-set "level=%~2"
-if "%level%"=="" set "level=INFO"
-
-echo [!TIMESTAMP!] [%level%] %msg% >> "%LOG_FILE%"
-goto :eof
-
-:LogError
-set "msg=%~1"
-echo [!TIMESTAMP!] [ERROR] %msg% >> "%LOG_FILE%"
-color 0C
-echo.
-echo ================================================================================
-echo  ERROR
-echo ================================================================================
-echo.
-echo %msg%
-echo.
-echo For more details, see: %LOG_FILE%
-echo.
-color 07
-goto :eof
-
-:LogSuccess
-set "msg=%~1"
-echo [!TIMESTAMP!] [SUCCESS] %msg% >> "%LOG_FILE%"
-color 0A
-echo.
-echo ================================================================================
-echo  SUCCESS
-echo ================================================================================
-echo.
-echo %msg%
-echo.
-color 07
-goto :eof
-
-:LogInfo
-set "msg=%~1"
-echo [!TIMESTAMP!] [INFO] %msg% >> "%LOG_FILE%"
-echo [INFO] %msg%
-goto :eof
+:: Initialize log file and clear old contents
+(
+    echo [%date% %time%] Launcher started
+) > "%LOG_FILE%"
 
 :: ============================================================================
 :: Main Script
 :: ============================================================================
 
-:Main
 cls
 echo.
 echo ================================================================================
 echo  Veyon Installation Tool Launcher
 echo ================================================================================
 echo.
+echo [INFO] Initializing...
 
-call :LogMessage "Launcher started" "INFO"
+(echo [%date% %time%] Checking for script file...) >> "%LOG_FILE%"
 
 :: Verify script exists
 if not exist "%SCRIPT_NAME%" (
-    call :LogError "Critical: %SCRIPT_NAME% not found in %~dp0"
-    call :LogMessage "Expected location: %~dp0%SCRIPT_NAME%" "ERROR"
+    echo.
+    echo [ERROR] CRITICAL: %SCRIPT_NAME% not found!
+    echo.
+    echo Expected location: %~dp0%SCRIPT_NAME%
+    echo.
+    (echo [%date% %time%] [ERROR] Script not found at %~dp0%SCRIPT_NAME%) >> "%LOG_FILE%"
     set "NEED_PAUSE=1"
     goto :End
 )
 
-call :LogInfo "Found: %SCRIPT_NAME%"
-
-:: Check if script is readable
-for /f %%A in ('wmic datafile where name="%~dp0%SCRIPT_NAME:\=\\%" get filesize 2^>nul') do (
-    if "%%A" equ "FileSize" goto :CheckAdminPrivileges
-    if "%%A" gtr "100000" (
-        call :LogInfo "Script size: %%A bytes"
-        goto :CheckAdminPrivileges
-    )
-)
-
-call :LogError "Script file appears corrupted or too small"
-set "NEED_PAUSE=1"
-goto :End
+echo [INFO] Found %SCRIPT_NAME%
+(echo [%date% %time%] Script file found) >> "%LOG_FILE%"
 
 :: ============================================================================
 :: Elevation Check
 :: ============================================================================
 
-:CheckAdminPrivileges
 echo [INFO] Checking for administrator privileges...
+(echo [%date% %time%] Checking admin privileges) >> "%LOG_FILE%"
+
 net session >nul 2>&1
 if %errorLevel% neq 0 (
-    call :LogMessage "User does not have admin privileges - requesting elevation" "INFO"
     echo.
-    echo [INFO] Requesting Administrator access...
+    echo [INFO] Administrator access required - requesting elevation...
     echo Please click YES in the User Account Control prompt.
     echo.
+    (echo [%date% %time%] User lacks admin privileges - requesting elevation) >> "%LOG_FILE%"
     
-    :: Request elevation
-    powershell -Command "Start-Process cmd.exe -ArgumentList '/c \"%~f0\"' -Verb RunAs" 2>>"%LOG_FILE%"
+    :: Request elevation via PowerShell
+    powershell -NoProfile -Command "Start-Process cmd.exe -ArgumentList '/c \"%~f0\"' -Verb RunAs" 2>>"%LOG_FILE%"
+    set "UAC_CODE=!errorLevel!"
     
-    if !errorLevel! equ 0 (
-        call :LogMessage "Elevation successful" "SUCCESS"
+    if !UAC_CODE! equ 0 (
+        (echo [%date% %time%] Elevation request successful) >> "%LOG_FILE%"
     ) else (
-        call :LogMessage "Elevation denied or failed (error code: !errorLevel!)" "ERROR"
-        call :LogError "Administrator privileges are required to run this tool."
-        set "NEED_PAUSE=1"
+        (echo [%date% %time%] Elevation denied or failed with code !UAC_CODE!) >> "%LOG_FILE%"
     )
-    exit /b !errorLevel!
+    exit /b !UAC_CODE!
 )
 
-call :LogSuccess "Running with administrator privileges"
+echo [SUCCESS] Running with administrator privileges
+(echo [%date% %time%] Confirmed: running as administrator) >> "%LOG_FILE%"
 
 :: ============================================================================
 :: Execute PowerShell Script
 :: ============================================================================
 
-:ExecuteScript
 echo.
 echo ================================================================================
 echo  Launching Veyon Setup Script
 echo ================================================================================
 echo.
 
-call :LogMessage "Executing: powershell -NoProfile -ExecutionPolicy Bypass -File %SCRIPT_NAME%" "INFO"
-echo [INFO] Starting PowerShell script execution...
-echo.
+(echo [%date% %time%] Launching PowerShell script) >> "%LOG_FILE%"
+(echo [%date% %time%] Command: powershell -NoProfile -ExecutionPolicy Bypass -File %SCRIPT_NAME%) >> "%LOG_FILE%"
 
-:: Run the PowerShell script
+:: Run the PowerShell script with proper error handling
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_NAME%" 2>>"%LOG_FILE%"
 
 set "PS_EXIT_CODE=!errorLevel!"
 
-if !PS_EXIT_CODE! equ 0 (
-    call :LogMessage "PowerShell script completed successfully (exit code: !PS_EXIT_CODE!)" "SUCCESS"
-) else (
-    call :LogMessage "PowerShell script exited with code: !PS_EXIT_CODE!" "WARN"
-)
-
-goto :End
+(echo [%date% %time%] PowerShell script exited with code !PS_EXIT_CODE!) >> "%LOG_FILE%"
 
 :: ============================================================================
 :: Cleanup and Exit
@@ -167,25 +103,30 @@ goto :End
 :End
 echo.
 echo ================================================================================
-echo  Launcher Complete
+echo  Launcher Completed
 echo ================================================================================
 echo.
 echo Log file: %LOG_FILE%
+echo Exit code: %PS_EXIT_CODE%
 echo.
 
+(echo [%date% %time%] Launcher preparing to exit with code %PS_EXIT_CODE%) >> "%LOG_FILE%"
+
 if "%NEED_PAUSE%"=="1" (
-    call :LogMessage "Pausing due to error" "INFO"
+    echo.
     echo Press any key to close this window...
+    (echo [%date% %time%] Paused for user due to error) >> "%LOG_FILE%"
     pause > nul
 ) else (
-    if !PS_EXIT_CODE! neq 0 (
-        echo Script exited with a status code. Logs have been recorded.
+    if %PS_EXIT_CODE% neq 0 (
+        echo.
+        echo Script completed with status code: %PS_EXIT_CODE%
         echo.
         echo Press any key to close this window...
         pause > nul
     )
 )
 
-call :LogMessage "Launcher closed" "INFO"
-exit /b !PS_EXIT_CODE!
+(echo [%date% %time%] Launcher closed) >> "%LOG_FILE%"
+exit /b %PS_EXIT_CODE%
 

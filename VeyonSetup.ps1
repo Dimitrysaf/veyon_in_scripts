@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Veyon Installation and Configuration Tool
 .DESCRIPTION
@@ -125,13 +125,18 @@ function Preflight-Checks {
         }
 
         # Disk space check (system drive)
-        $sysDrive = (Get-PSDrive -Name (Split-Path $env:SystemDrive -Qualifier)).Name
-        $freeMB = [math]::Round((Get-PSDrive -Name $env:SystemDrive.TrimEnd('\'))[0].Free / 1MB, 0)
-        if ($freeMB -lt $MinFreeMB) {
-            Write-Host "Warning: Low disk space on system drive: $freeMB MB free" -ForegroundColor $script:Colors.Warning
-            Write-Log "Preflight: Low disk space ($freeMB MB)" -Level Warning
-            $resp = Read-Host "Continue with low disk space? (y/N)"
-            if ($resp -ne 'y') { $ok = $false }
+        try {
+            $sysDriveLetter = $env:SystemDrive.TrimEnd('\')
+            $drive = Get-PSDrive -Name $sysDriveLetter -ErrorAction Stop
+            $freeMB = [math]::Round($drive.Free / 1MB, 0)
+            if ($freeMB -lt $MinFreeMB) {
+                Write-Host "Warning: Low disk space on system drive: $freeMB MB free" -ForegroundColor $script:Colors.Warning
+                Write-Log "Preflight: Low disk space ($freeMB MB)" -Level Warning
+                $resp = Read-Host "Continue with low disk space? (y/N)"
+                if ($resp -ne 'y') { $ok = $false }
+            }
+        } catch {
+            Write-Log "Preflight: Could not check disk space (drive may not be accessible): $_" -Level Warning
         }
 
         if ($RequireNonAdmin) {
@@ -621,7 +626,13 @@ function Export-ComputerToRegistry {
         }
         
         # Add new computer entry (or update if same computer name exists)
-        $existingIndex = $registry.FindIndex({ param($item) $item.ComputerName -eq $computerInfo.ComputerName })
+        $existingIndex = -1
+        for ($i = 0; $i -lt $registry.Count; $i++) {
+            if ($registry[$i].ComputerName -eq $computerInfo.ComputerName) {
+                $existingIndex = $i
+                break
+            }
+        }
         
         if ($existingIndex -ge 0) {
             $registry[$existingIndex] = $computerInfo
@@ -704,8 +715,13 @@ function Install-Veyon {
     Start-Sleep -Seconds 2
     
     try {
-        # Run preflight checks (require at least one non-admin user for installs)
-        $preflightOk = Preflight-Checks -MinFreeMB 500 -RequireNonAdmin
+        # Run preflight checks (require non-admin users only for Student mode)
+        if ($isTeacher) {
+            $preflightOk = Preflight-Checks -MinFreeMB 500
+        } else {
+            # Student mode requires at least one non-admin user account
+            $preflightOk = Preflight-Checks -MinFreeMB 500 -RequireNonAdmin
+        }
         if (-not $preflightOk) {
             Write-Host "Preflight checks failed or cancelled. Aborting installation." -ForegroundColor $script:Colors.Error
             Write-Log "Installation aborted due to failed preflight checks" -Level Error
@@ -1465,10 +1481,13 @@ function Ensure-TeacherKeys {
         $exitCode = $LASTEXITCODE
         Write-Log "Veyon CLI authkeys output: $output"
 
-        if ($exitCode -ne 0) {
+        # Note: Veyon CLI may return non-zero exit codes even on success
+        # Check if the output contains [OK] to determine success
+        if ($output -notmatch '\[OK\]' -and $exitCode -ne 0) {
             Write-Log "Key generation failed with exit code $exitCode" -Level Error
             return $false
         }
+        Write-Log "Keys generated successfully (exit code: $exitCode)" -Level Success
 
         Start-Sleep -Seconds 1
 
@@ -2553,9 +2572,9 @@ function Show-MainMenu {
     Write-Host "  [3] Uninstall Veyon" -ForegroundColor $script:Colors.Info
     Write-Host "  [4] Configure Veyon" -ForegroundColor $script:Colors.Info
     Write-Host "  [5] User Restrictions" -ForegroundColor $script:Colors.Info
-    Write-Host "  [6] Windows Personalization & Cleanup" -ForegroundColor $script:Colors.Info
+    Write-Host "  [6] Windows Personalization `& Cleanup" -ForegroundColor $script:Colors.Info
     Write-Host "  [7] Rename Computer" -ForegroundColor $script:Colors.Info
-    Write-Host "  [8] Documentation & Help" -ForegroundColor $script:Colors.Info
+    Write-Host "  [8] Documentation `& Help" -ForegroundColor $script:Colors.Info
     Write-Host "  [0] Exit" -ForegroundColor $script:Colors.Warning
     Write-Host ""
     
@@ -2639,7 +2658,7 @@ function Show-SystemInformation {
 
 function Show-Documentation {
     Show-Header
-    Write-Host "DOCUMENTATION & HELP" -ForegroundColor $script:Colors.Header
+    Write-Host "DOCUMENTATION `& HELP" -ForegroundColor $script:Colors.Header
     Write-Host ""
     
     Write-Host "Official Veyon Documentation:" -ForegroundColor $script:Colors.Header
@@ -2732,7 +2751,7 @@ function Main {
     # Start transcript if verbose logging enabled
     if ($script:Config.LogVerbose) {
         try {
-            Start-Transcript -Path $script:Config.LogPath -Append -ErrorAction SilentlyContinue
+            Start-Transcript -Path "$env:ProgramData\Veyon\transcript.log" -Append -ErrorAction SilentlyContinue
             Write-Log "Transcript started" -Level Info
         } catch {
             Write-Log "Could not start transcript: $_" -Level Warning
@@ -2794,7 +2813,7 @@ function Main {
                         exit 1
                     }
                 } else {
-                    Write-Host "Usage: script.ps1 rename <newname> [-restart]" -ForegroundColor $script:Colors.Error
+                    Write-Host "Usage: script.ps1 rename newname [-restart]" -ForegroundColor $script:Colors.Error
                     exit 1
                 }
             }
@@ -2806,42 +2825,37 @@ function Main {
                 Write-Host "Download URL: $($release.DownloadUrl)" -ForegroundColor $script:Colors.Info
             }
             'help' {
-                                Write-Host @"
-
-Veyon Installation & Configuration Tool v2.0 - CLI Help
-$script:Line80
-
-Usage: .\VeyonSetup.ps1 [command] [arguments]
-
-Commands:
-    install [mode]       Install Veyon (mode: teacher or student)
-                       - teacher: Installs Master + Service (with key export)
-                       - student: Installs Service only (NO Master)
-  uninstall            Uninstall Veyon completely
-  info                 Display system information
-  export [format]      Export system info (JSON, CSV, TXT)
-  rename <name>        Rename computer (add -restart to restart automatically)
-  version              Show latest available Veyon version
-  help                 Show this help message
-
-Examples:
-  .\VeyonSetup.ps1 install teacher
-  .\VeyonSetup.ps1 install student
-  .\VeyonSetup.ps1 uninstall
-  .\VeyonSetup.ps1 info
-  .\VeyonSetup.ps1 export JSON
-  .\VeyonSetup.ps1 rename LAB-PC-01
-  .\VeyonSetup.ps1 rename LAB-PC-01 -restart
-  .\VeyonSetup.ps1 version
-
-Interactive Mode:
-  Run without arguments to enter interactive menu mode.
-
-For detailed documentation, visit:
-  Administrator Manual: $($script:Config.ManualUrls.Admin)
-  User Manual:          $($script:Config.ManualUrls.User)
-
-"@ -ForegroundColor $script:Colors.Info
+                Write-Host 'Veyon Installation & Configuration Tool v2.0 - CLI Help' -ForegroundColor $script:Colors.Info
+                Write-Host $script:Line80 -ForegroundColor $script:Colors.Info
+                Write-Host 'Usage: .\VeyonSetup.ps1 [command] [arguments]' -ForegroundColor $script:Colors.Info
+                Write-Host '' -ForegroundColor $script:Colors.Info
+                Write-Host 'Commands:' -ForegroundColor $script:Colors.Info
+                Write-Host '  install mode         Install Veyon (mode: teacher or student)' -ForegroundColor $script:Colors.Info
+                Write-Host '    teacher = Installs Master + Service (with key export)' -ForegroundColor $script:Colors.Info
+                Write-Host '    student = Installs Service only (NO Master)' -ForegroundColor $script:Colors.Info
+                Write-Host '  uninstall            Uninstall Veyon completely' -ForegroundColor $script:Colors.Info
+                Write-Host '  info                 Display system information' -ForegroundColor $script:Colors.Info
+                Write-Host '  export format        Export system info (JSON, CSV, TXT)' -ForegroundColor $script:Colors.Info
+                Write-Host '  rename name          Rename computer (add -restart to restart automatically)' -ForegroundColor $script:Colors.Info
+                Write-Host '  version              Show latest available Veyon version' -ForegroundColor $script:Colors.Info
+                Write-Host '  help                 Show this help message' -ForegroundColor $script:Colors.Info
+                Write-Host '' -ForegroundColor $script:Colors.Info
+                Write-Host 'Examples:' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 install teacher' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 install student' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 uninstall' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 info' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 export JSON' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 rename LAB-PC-01' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 rename LAB-PC-01 -restart' -ForegroundColor $script:Colors.Info
+                Write-Host '  .\VeyonSetup.ps1 version' -ForegroundColor $script:Colors.Info
+                Write-Host '' -ForegroundColor $script:Colors.Info
+                Write-Host 'Interactive Mode:' -ForegroundColor $script:Colors.Info
+                Write-Host '  Run without arguments to enter interactive menu mode.' -ForegroundColor $script:Colors.Info
+                Write-Host "" -ForegroundColor $script:Colors.Info
+                Write-Host "For detailed documentation, visit:" -ForegroundColor $script:Colors.Info
+                Write-Host "  Administrator Manual: $($script:Config.ManualUrls.Admin)" -ForegroundColor $script:Colors.Info
+                Write-Host "  User Manual:          $($script:Config.ManualUrls.User)" -ForegroundColor $script:Colors.Info
             }
             default {
                 Write-Host "Unknown command: $Command" -ForegroundColor $script:Colors.Error
