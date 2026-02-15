@@ -90,7 +90,11 @@ try {
             if ([string]::IsNullOrWhiteSpace($path)) { Write-Host "No path provided." -ForegroundColor Yellow; Start-Sleep -Seconds 1; continue }
             if (-not (Test-Path $path)) { Write-Host "File not found: $path" -ForegroundColor Red; Start-Sleep -Seconds 1; continue }
             if (Get-Command -Name Write-Log -ErrorAction SilentlyContinue) { Write-Log -Level 'INFO' -Message "Running external script: $path" }
-            try { & $path } catch { if (Get-Command -Name Write-Exception -ErrorAction SilentlyContinue) { Write-Exception -ErrorRecord $_ } }
+            try { & $path } catch {
+                $errMsg = $_.Exception.Message
+                if (Get-Command -Name Write-Exception -ErrorAction SilentlyContinue) { Write-Exception -ErrorRecord $_ }
+                Write-Host "Script error: $errMsg" -ForegroundColor Red
+            }
             Read-Host "Press Enter to continue..."
             continue
         }
@@ -105,7 +109,11 @@ try {
                     $script = $files[$idx].FullName
                     
                     if (Get-Command -Name Write-Log -ErrorAction SilentlyContinue) { Write-Log -Level 'INFO' -Message "Running library script: $script" }
-                    try { & $script } catch { if (Get-Command -Name Write-Exception -ErrorAction SilentlyContinue) { Write-Exception -ErrorRecord $_ } }
+                    try { & $script } catch {
+                        $errMsg = $_.Exception.Message
+                        if (Get-Command -Name Write-Exception -ErrorAction SilentlyContinue) { Write-Exception -ErrorRecord $_ }
+                        Write-Host "Script error: $errMsg" -ForegroundColor Red
+                    }
                     Read-Host "Press Enter to continue..."
                     continue
                 } else {

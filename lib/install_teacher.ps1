@@ -13,8 +13,23 @@ $cwd = $scriptDir
 # load logger
 $loggerPath = Join-Path $scriptDir 'logger.psm1'
 if (Test-Path $loggerPath) { Import-Module $loggerPath -Force -Scope Local }
-function Log { param($level,$msg) if (Get-Command -Name Write-Log -ErrorAction SilentlyContinue) { Write-Log -Level $level -Message $msg } else { Write-Host "$level: $msg" } }
-function LogEx { param($err) if (Get-Command -Name Write-Exception -ErrorAction SilentlyContinue) { Write-Exception -ErrorRecord $err } else { Write-Host "EX: $err" } }
+function Log {
+    param($level, $msg)
+    if (Get-Command -Name Write-Log -ErrorAction SilentlyContinue) {
+        Write-Log -Level $level -Message $msg
+    } else {
+        Write-Host ("{0}: {1}" -f $level, $msg)
+    }
+}
+
+function LogEx {
+    param($err)
+    if (Get-Command -Name Write-Exception -ErrorAction SilentlyContinue) {
+        Write-Exception -ErrorRecord $err
+    } else {
+        Write-Host ("EX: {0}" -f $err)
+    }
+}
 
 try {
     Log INFO "install_teacher: Starting"
@@ -68,28 +83,37 @@ try {
 
     if ($checksum) { Log INFO "Remote checksum found: $checksum" } else { Log WARN "No remote checksum located; will compute local SHA and prompt" }
 
-    # download with progress using WebClient
+    # download with progress using HttpWebRequest stream (works on Windows PowerShell)
     $outFile = Join-Path -Path $cwd -ChildPath $name64
     if (Test-Path $outFile) { Remove-Item -Path $outFile -Force -ErrorAction SilentlyContinue }
 
     Log INFO "Downloading $url64 -> $outFile"
-    $wc = New-Object System.Net.WebClient
-    $wc.Headers['User-Agent'] = 'PowerShell'
-    $downloadComplete = $false
-    $wc.DownloadProgressChanged += {
-        param($s,$e)
-        $pct = $e.ProgressPercentage
-        Write-Progress -Activity "Downloading $name64" -Status "$pct% ($([Math]::Round($e.BytesReceived/1KB)) KB of $([Math]::Round($e.TotalBytesToReceive/1KB)) KB)" -PercentComplete $pct
+    $req = [System.Net.HttpWebRequest]::Create($url64)
+    $req.Method = 'GET'
+    $req.UserAgent = 'PowerShell'
+    $resp = $req.GetResponse()
+    $total = $resp.ContentLength
+    $stream = $resp.GetResponseStream()
+    $outStream = [System.IO.File]::OpenWrite($outFile)
+    try {
+        $buffer = New-Object byte[] 81920
+        $read = 0
+        $downloaded = 0
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outStream.Write($buffer, 0, $read)
+            $downloaded += $read
+            if ($total -gt 0) { $pct = [int]((($downloaded / $total) * 100)) } else { $pct = 0 }
+            $kbRec = [math]::Round($downloaded / 1KB)
+            $kbTot = if ($total -gt 0) { [math]::Round($total / 1KB) } else { 0 }
+            Write-Progress -Activity "Downloading $name64" -Status "$pct% ($kbRec KB of $kbTot KB)" -PercentComplete $pct
+        }
+        Write-Progress -Activity "Downloading $name64" -Completed
+        Log INFO "Download complete: $outFile"
+    } finally {
+        $outStream.Close()
+        $stream.Close()
+        $resp.Close()
     }
-    $wc.DownloadFileCompleted += {
-        param($s,$e)
-        $downloadComplete = $true
-    }
-    $uri = [System.Uri]$url64
-    $wc.DownloadFileAsync($uri,$outFile)
-    while (-not $downloadComplete) { Start-Sleep -Milliseconds 200 }
-    Write-Progress -Activity "Downloading $name64" -Completed
-    Log INFO "Download complete: $outFile"
 
     # compute SHA256
     $localHash = (Get-FileHash -Algorithm SHA256 -Path $outFile).Hash.ToLower()
