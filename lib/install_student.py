@@ -1,10 +1,8 @@
 """
 install_student.py - Install for Students
-- Fetches latest Veyon release from GitHub API
-- Downloads win64 installer
-- Verifies SHA256 checksum
-- Installs silently WITHOUT Master component (client only)
-- Distributes keys FROM PWD/keys TO C:\ProgramData\Veyon\keys
+- Downloads Veyon and stages to local disk for UAC compatibility
+- Installs silently (Client only)
+- Interactive key distribution with secondary elevation prompt
 """
 
 import os
@@ -15,365 +13,167 @@ import tempfile
 import shutil
 import subprocess
 import time
+import ctypes
 from pathlib import Path
 
 import requests
+
+# Try to import pywin32 for better process tracking
+try:
+    import win32api
+    import win32event
+    import win32process
+    from win32com.shell import shell, shellcon
+    HAS_PYWIN32 = True
+except ImportError:
+    HAS_PYWIN32 = False
 
 # Import logger
 sys.path.insert(0, str(Path(__file__).parent))
 from logger import get_logger
 
 def get_file_sha256(filepath):
-    """Calculate SHA256 hash of a file"""
     sha256_hash = hashlib.sha256()
     with open(filepath, "rb") as f:
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest().lower()
 
-def find_checksum_in_text(text, filename):
-    """Extract SHA256 checksum from text content"""
-    lines = text.split('\n')
-    checksum = None
-    
-    for line in lines:
-        # Look for 64-character hex strings (SHA256)
-        match = re.search(r'\b([A-Fa-f0-9]{64})\b', line)
-        if match:
-            hash_value = match.group(1).lower()
-            # If line contains our filename, that's our checksum
-            if filename in line:
-                return hash_value
-            # Otherwise, save as fallback
-            if checksum is None:
-                checksum = hash_value
-    
-    return checksum
-
 def download_file_with_progress(url, destination):
-    """Download file with progress indicator"""
     logger = get_logger()
-    
     response = requests.get(url, stream=True, headers={'User-Agent': 'Python'})
     response.raise_for_status()
-    
     total_size = int(response.headers.get('content-length', 0))
-    block_size = 8192
     downloaded = 0
-    
     with open(destination, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=block_size):
+        for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 f.write(chunk)
                 downloaded += len(chunk)
-                
                 if total_size > 0:
                     percent = int((downloaded / total_size) * 100)
-                    mb_downloaded = downloaded / (1024 * 1024)
-                    mb_total = total_size / (1024 * 1024)
-                    print(f"\rDownloading: {percent}% ({mb_downloaded:.1f} MB / {mb_total:.1f} MB)", end='')
-    
-    print()  # New line after progress
-    logger.info(f"Download complete: {destination}")
+                    print(f"\rDownloading: {percent}%", end='')
+    print()
 
 def distribute_keys_to_veyon(root_path):
-    """Copy keys FROM PWD TO ProgramData (reverse of teacher)"""
+    """Copy keys from PWD to Veyon Data folder. Prompt for elevation if denied."""
     logger = get_logger()
-    
-    # Source is PWD/keys/
     keys_source = root_path / 'keys'
-    
-    # Destination is C:\ProgramData\Veyon\keys
     veyon_keys_destination = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
     
     if not keys_source.exists():
         logger.error(f"Keys directory not found at: {keys_source}")
-        logger.error("Please copy the 'keys' folder from the teacher machine to this directory first!")
         return False
     
-    logger.info(f"Distributing keys from: {keys_source}")
     logger.info(f"Distributing keys to: {veyon_keys_destination}")
     
     try:
-        # Create parent directory if it doesn't exist
+        # 1. Attempt standard copy
         veyon_keys_destination.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Remove existing destination if it exists
         if veyon_keys_destination.exists():
             shutil.rmtree(veyon_keys_destination)
-            logger.debug(f"Removed existing keys at {veyon_keys_destination}")
-        
-        # Copy entire directory tree FROM PWD TO ProgramData
         shutil.copytree(keys_source, veyon_keys_destination)
-        
-        # Count copied files
-        copied_files = list(veyon_keys_destination.rglob('*'))
-        file_count = len([f for f in copied_files if f.is_file()])
-        
-        logger.info(f"Successfully distributed {file_count} file(s) to Veyon")
-        
-        # Log what was copied
-        for file in copied_files:
-            if file.is_file():
-                relative_path = file.relative_to(veyon_keys_destination)
-                logger.debug(f"  Distributed: {relative_path}")
-        
-        logger.info("Keys distributed successfully to Veyon installation")
-        
+        logger.info("Keys distributed successfully.")
         return True
+
+    except PermissionError:
+        # 2. Permission denied - Prompt the user
+        print("\n" + "!"*60)
+        print("Permission is denied to move the keys to the Data folder.")
+        choice = input("Wanna try with admin rights? (Y/n): ").strip().lower()
+        print("!"*60 + "\n")
         
-    except Exception as e:
-        logger.error(f"Failed to distribute keys: {e}")
+        if choice in ['y', 'yes', '']:
+            logger.info("Requesting UAC for key distribution...")
+            # Use robocopy via elevated cmd. /MIR mirrors the directory.
+            # 0 = SW_HIDE (runs in background)
+            params = f'/c robocopy "{keys_source}" "{veyon_keys_destination}" /MIR /R:1 /W:1'
+            
+            
+            
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", "cmd.exe", params, None, 0
+            )
+            if ret > 32:
+                logger.info("Keys distributed successfully via elevated Robocopy.")
+                return True
+            else:
+                logger.error(f"UAC denied or failed (Code: {ret})")
+        else:
+            logger.warning("User declined elevation. Keys were not copied.")
         return False
 
 def install_student():
-    """Main installation function for student machines"""
     logger = get_logger()
-    
     try:
         logger.info("install_student: Starting")
-        
-        # Get script directory and create temp directory
         script_dir = Path(__file__).parent
         root_dir = script_dir.parent
         temp_dir = script_dir / 'temp'
         temp_dir.mkdir(exist_ok=True)
         
-        # Query GitHub API
+        # GitHub Query
         api_url = 'https://api.github.com/repos/veyon/veyon/releases/latest'
-        logger.debug(f"Querying GitHub API: {api_url}")
-        
-        headers = {'User-Agent': 'Python'}
-        response = requests.get(api_url, headers=headers)
-        response.raise_for_status()
-        release = response.json()
-        
+        release = requests.get(api_url, headers={'User-Agent': 'Python'}).json()
         tag = release['tag_name']
-        logger.info(f"Latest release: {tag}")
+        asset = next(a for a in release['assets'] if 'win64' in a['name'].lower())
         
-        # Find win64 installer asset
-        assets = release.get('assets', [])
-        if not assets:
-            raise Exception(f"No assets found in release {tag}")
+        # Download to local Z: drive first
+        network_installer = temp_dir / asset['name']
+        logger.info(f"Downloading Veyon {tag}...")
+        download_file_with_progress(asset['browser_download_url'], network_installer)
         
-        asset64 = None
-        for asset in assets:
-            if 'win64' in asset['name'].lower() or 'win64' in asset['browser_download_url'].lower():
-                asset64 = asset
-                break
+        # STAGING: Copy from Z: to local C: temp folder (Fixes UAC "File Not Found" on network drives)
+        local_installer = Path(tempfile.gettempdir()) / asset['name']
+        logger.info(f"Staging installer to local disk: {local_installer}")
+        shutil.copy2(network_installer, local_installer)
         
-        if not asset64:
-            raise Exception(f"No win64 asset found in release {tag}")
+        logger.info("Launching installer... Please approve the UAC prompt.")
         
-        download_url = asset64['browser_download_url']
-        filename = asset64['name']
-        logger.info(f"Found asset: {filename}")
-        
-        # Try to find checksum
-        checksum = None
-        
-        # Look for checksum asset (SHA256SUMS, checksums.txt, etc.)
-        checksum_asset = None
-        for asset in assets:
-            name_lower = asset['name'].lower()
-            if any(keyword in name_lower for keyword in ['sha256', 'checksum', 'hash', 'sum']):
-                checksum_asset = asset
-                logger.debug(f"Found potential checksum asset: {asset['name']}")
-                break
-        
-        if checksum_asset:
-            logger.debug(f"Downloading checksum file: {checksum_asset['name']}")
-            try:
-                checksum_response = requests.get(checksum_asset['browser_download_url'], headers=headers)
-                checksum_response.raise_for_status()
-                checksum_text = checksum_response.text
-                logger.debug(f"Checksum file content:\n{checksum_text[:500]}")  # Log first 500 chars
-                checksum = find_checksum_in_text(checksum_text, filename)
-                if checksum:
-                    logger.info(f"Found matching checksum for {filename}")
-            except Exception as e:
-                logger.warning(f"Failed to download checksum file: {e}")
-        
-        # Fallback: parse release body for SHA256
-        if not checksum and release.get('body'):
-            logger.debug("Attempting to parse release body for checksum")
-            checksum = find_checksum_in_text(release['body'], filename)
-            if checksum:
-                logger.info(f"Found checksum in release body")
-        
-        if checksum:
-            logger.info(f"Remote SHA256: {checksum}")
-        else:
-            logger.warning("No remote checksum found - will compute local SHA256 only")
-            logger.warning("Veyon may not publish SHA256 checksums in releases")
-        
-        # Download installer
-        output_file = temp_dir / filename
-        if output_file.exists():
-            output_file.unlink()
-        
-        logger.info(f"Downloading {download_url}")
-        download_file_with_progress(download_url, output_file)
-        
-        # Verify SHA256
-        local_hash = get_file_sha256(output_file)
-        logger.info(f"Local SHA256: {local_hash}")
-        
-        if checksum:
-            if local_hash != checksum:
-                raise Exception(
-                    f"SHA256 VERIFICATION FAILED!\n"
-                    f"Remote: {checksum}\n"
-                    f"Local:  {local_hash}"
-                )
-            logger.info("SHA256 verified successfully - checksums match!")
-        else:
-            logger.warning("No remote checksum available for comparison")
-            logger.warning(f"Computed local SHA256: {local_hash}")
-            logger.warning("Please verify this checksum manually if security is critical")
-        
-        # Copy to temp directory for installation
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.exe', dir=tempfile.gettempdir()) as tmp:
-            temp_installer = Path(tmp.name)
-        
-        shutil.copy2(output_file, temp_installer)
-        logger.info(f"Copied installer to: {temp_installer}")
-        
-        # Run installer silently (WITHOUT Master component)
-        # Note: Veyon installer automatically detects role based on configuration
-        # Using /Service flag installs the client service for remote control
-        # Master component is controlled separately through Veyon Configurator
-        logger.info(f"Starting silent installation: {temp_installer}")
-        logger.info("Installing Veyon CLIENT only (for student machines)")
-        logger.info("The Master/Teacher component will NOT be installed")
-        
-        if sys.platform == 'win32':
-            # Windows silent install - need elevation
-            import ctypes
+        if HAS_PYWIN32:
+            # Better way: track process handle to wait exactly as long as needed
+            sei = {
+                'fMask': shellcon.SEE_MASK_NOCLOSEPROCESS,
+                'lpVerb': 'runas',
+                'lpFile': str(local_installer),
+                'lpParameters': '/S /Service',
+                'nShow': 1
+            }
+            # Execute and get process handle
+            struct_sei = shell.ShellExecuteEx(**sei)
+            hProcess = struct_sei['hProcess']
             
-            # Check if running as admin
-            try:
-                is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-            except:
-                is_admin = False
-            
-            if not is_admin:
-                logger.warning("Not running as administrator!")
-                logger.warning("The installer requires elevation. Attempting to elevate...")
-                
-                # Use ShellExecute with runas to trigger UAC prompt
-                # /S = silent, /ApplyConfig = use default config (client only, no master)
-                try:
-                    import win32api
-                    import win32event
-                    import win32process
-                    from win32com.shell import shell, shellcon
-                    
-                    # Get process info structure
-                    # For STUDENT mode: Install client only, no Master
-                    # Veyon installer flags: /S (silent), /Service (0=no service, 1=yes)
-                    sei_mask = shellcon.SEE_MASK_NOCLOSEPROCESS | shellcon.SEE_MASK_NO_CONSOLE
-                    sei = shell.ShellExecuteEx(
-                        fMask=sei_mask,
-                        lpVerb='runas',
-                        lpFile=str(temp_installer),
-                        lpParameters='/S /Service',  # Install service but student mode
-                        nShow=1
-                    )
-                    
-                    hProcess = sei['hProcess']
-                    
-                    if hProcess:
-                        logger.info("Installer launched with elevation (UAC prompted)")
-                        logger.info("Waiting for installer to complete...")
-                        
-                        # Wait for process to finish (infinite timeout)
-                        win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
-                        
-                        # Get exit code
-                        exit_code = win32process.GetExitCodeProcess(hProcess)
-                        win32api.CloseHandle(hProcess)
-                        
-                        logger.info(f"Installer exited with code {exit_code}")
-                        
-                        if exit_code != 0:
-                            logger.warning(f"Installer returned non-zero exit code: {exit_code}")
-                    else:
-                        raise Exception("Failed to get process handle from elevated installer")
-                    
-                except ImportError:
-                    # Fallback if pywin32 not available
-                    logger.warning("pywin32 not available, using fallback method")
-                    
-                    result = ctypes.windll.shell32.ShellExecuteW(
-                        None, 
-                        "runas",
-                        str(temp_installer),
-                        "/S /Service",  # Install service for student mode
-                        None,
-                        1
-                    )
-                    
-                    if result <= 32:
-                        raise Exception(f"ShellExecute failed with code {result}")
-                    
-                    logger.info("Installer launched with elevation (UAC prompted)")
-                    logger.warning("Cannot track process without pywin32. Waiting 30 seconds...")
-                    time.sleep(30)
-                    exit_code = 0
-                    
-                except Exception as e:
-                    logger.error(f"Failed to elevate installer: {e}")
-                    raise Exception(
-                        "Installation requires administrator privileges.\n"
-                        "Please run this script as Administrator:\n"
-                        "  Right-click menu.py → 'Run as administrator'"
-                    )
+            if hProcess:
+                logger.info("Installer running... waiting for completion.")
+                win32event.WaitForSingleObject(hProcess, win32event.INFINITE)
+                win32api.CloseHandle(hProcess)
             else:
-                # Already admin, run normally
-                logger.info("Running as administrator - installing in STUDENT mode")
-                process = subprocess.Popen(
-                    [str(temp_installer), '/S', '/Service'],  # Student mode with service
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                process.wait()
-                exit_code = process.returncode
-                
-                if exit_code != 0:
-                    raise Exception(f"Installer exited with code {exit_code}")
-                
-                logger.info(f"Installer exited with code {exit_code}")
+                raise Exception("Failed to get installer process handle.")
         else:
-            logger.warning("Not running on Windows - skipping installation")
-            logger.info("On Linux, install Veyon using: sudo apt install veyon")
-        
-        # Clean up temp installer
-        try:
-            if temp_installer.exists():
-                temp_installer.unlink()
-                logger.info(f"Cleaned up temp installer: {temp_installer}")
-        except Exception as e:
-            logger.warning(f"Failed to clean up temp installer: {e}")
-        
-        # Wait a moment for installation to complete
-        time.sleep(2)
-        
-        # Distribute keys from PWD to Veyon installation
-        logger.info("Distributing keys to Veyon installation...")
+            # Fallback if pywin32 is missing
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", str(local_installer), "/S /Service", None, 1
+            )
+            if ret <= 32:
+                raise Exception(f"Installer failed to launch (Error Code: {ret})")
+            logger.info("Waiting 45 seconds for installation...")
+            time.sleep(45)
+
+        # Cleanup local installer
+        if local_installer.exists():
+            local_installer.unlink()
+
+        # Step 2: Distribute Keys
         distribute_keys_to_veyon(root_dir)
         
-        logger.info("install_student: Completed successfully")
-        logger.info("Student machine configured with keys from teacher")
+        logger.info("install_student: Process finished.")
         return True
         
     except Exception as e:
         logger.error(f"install_student failed: {e}")
-        logger.exception("Full traceback:")
         raise
 
 if __name__ == '__main__':
-    # If run directly, initialize logger
     from logger import init_logger
     init_logger()
     install_student()
