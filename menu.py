@@ -103,10 +103,16 @@ def display_menu():
     else:
         for i, script in enumerate(scripts, 1):
             description = get_script_description(script)
+            
+            # Special note for uninstall
+            admin_note = ""
+            if script.name == "uninstall.py":
+                admin_note = " [REQUIRES ADMIN]" if not COLORS else f" {Fore.RED}[REQUIRES ADMIN]{Fore.CYAN}"
+            
             if COLORS:
-                print(Fore.WHITE + f"  {i}) {script.name:<30} {Fore.CYAN}{description}")
+                print(Fore.WHITE + f"  {i}) {script.name:<30} {Fore.CYAN}{description}{admin_note}")
             else:
-                print(f"  {i}) {script.name:<30} {description}")
+                print(f"  {i}) {script.name:<30} {description}{admin_note}")
     
     print()
     if COLORS:
@@ -155,6 +161,8 @@ def run_script(script_path):
             module.install_teacher()
         elif hasattr(module, 'install_student'):
             module.install_student()
+        elif hasattr(module, 'uninstall_veyon'):
+            module.uninstall_veyon()
         elif hasattr(module, 'main'):
             module.main()
         else:
@@ -173,10 +181,23 @@ def main():
     """Main menu loop"""
     logger.info("Menu started")
     
+    # Check admin status
+    is_admin = False
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+        except:
+            pass
+    
     if COLORS:
-        print(Fore.CYAN + "menu.py: startup OK\n")
+        status = f"{Fore.GREEN}✓ Running as Administrator" if is_admin else f"{Fore.YELLOW}⚠ Not running as Administrator"
+        print(f"{Fore.CYAN}menu.py: startup OK")
+        print(status + Style.RESET_ALL + "\n")
     else:
-        print("menu.py: startup OK\n")
+        status = "✓ Running as Administrator" if is_admin else "⚠ Not running as Administrator"
+        print("menu.py: startup OK")
+        print(status + "\n")
     
     try:
         while True:
