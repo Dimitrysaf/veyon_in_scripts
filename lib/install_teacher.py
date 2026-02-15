@@ -77,62 +77,48 @@ def download_file_with_progress(url, destination):
     logger.info(f"Download complete: {destination}")
 
 def copy_veyon_keys(root_path):
-    """Copy Veyon keys to keys directory structure"""
+    """Copy entire Veyon keys directory to PWD"""
     logger = get_logger()
     
-    # Veyon keys are typically stored in:
-    # Windows: C:\ProgramData\Veyon\keys\
-    # Or in user profile: %APPDATA%\Veyon\keys\
+    # Veyon keys are stored in C:\ProgramData\Veyon\keys
+    veyon_keys_source = Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys'
     
-    possible_key_locations = [
-        Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'Veyon' / 'keys',
-        Path(os.environ.get('APPDATA', '')) / 'Veyon' / 'keys',
-        Path.home() / '.veyon' / 'keys',  # Linux location
-    ]
-    
-    veyon_keys_dir = None
-    for location in possible_key_locations:
-        if location.exists():
-            veyon_keys_dir = location
-            logger.info(f"Found Veyon keys at: {veyon_keys_dir}")
-            break
-    
-    if not veyon_keys_dir:
-        logger.warning("Could not find Veyon keys directory. Keys may not have been generated yet.")
-        logger.warning("You may need to run Veyon Configurator to generate keys.")
+    if not veyon_keys_source.exists():
+        logger.warning(f"Veyon keys directory not found at: {veyon_keys_source}")
+        logger.warning("Keys may not have been generated yet. Run Veyon Configurator to generate keys.")
         return False
     
-    # Create destination directory structure
-    keys_root = root_path / 'keys'
-    keys_private = keys_root / 'private' / 'supervisor'
-    keys_public = keys_root / 'public' / 'supervisor'
+    # Destination is PWD/keys/
+    keys_destination = root_path / 'keys'
     
-    keys_private.mkdir(parents=True, exist_ok=True)
-    keys_public.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Copying keys from: {veyon_keys_source}")
+    logger.info(f"Copying keys to: {keys_destination}")
     
-    # Copy keys
-    copied_count = 0
-    
-    # Look for key files
-    for key_file in veyon_keys_dir.rglob('*'):
-        if key_file.is_file():
-            # Determine if private or public key
-            if 'private' in key_file.name.lower() or key_file.suffix == '.pem':
-                dest = keys_private / 'key'
-                shutil.copy2(key_file, dest)
-                logger.info(f"Copied private key: {key_file} -> {dest}")
-                copied_count += 1
-            elif 'public' in key_file.name.lower() or key_file.suffix == '.pub':
-                dest = keys_public / 'key'
-                shutil.copy2(key_file, dest)
-                logger.info(f"Copied public key: {key_file} -> {dest}")
-                copied_count += 1
-    
-    if copied_count > 0:
-        logger.info(f"Successfully copied {copied_count} key(s)")
+    try:
+        # Remove existing destination if it exists
+        if keys_destination.exists():
+            shutil.rmtree(keys_destination)
+            logger.debug(f"Removed existing keys directory at {keys_destination}")
+        
+        # Copy entire directory tree
+        shutil.copytree(veyon_keys_source, keys_destination)
+        
+        # Count copied files
+        copied_files = list(keys_destination.rglob('*'))
+        file_count = len([f for f in copied_files if f.is_file()])
+        
+        logger.info(f"Successfully copied {file_count} file(s) from Veyon keys directory")
+        
+        # Log what was copied
+        for file in copied_files:
+            if file.is_file():
+                relative_path = file.relative_to(keys_destination)
+                logger.debug(f"  Copied: keys/{relative_path}")
+        
         return True
-    else:
-        logger.warning("No keys were copied. Generate keys using Veyon Configurator.")
+        
+    except Exception as e:
+        logger.error(f"Failed to copy keys directory: {e}")
         return False
 
 def install_teacher():
@@ -181,24 +167,29 @@ def install_teacher():
         # Try to find checksum
         checksum = None
         
-        # Look for checksum asset
+        # Look for checksum asset (SHA256SUMS, checksums.txt, etc.)
         checksum_asset = None
         for asset in assets:
             name_lower = asset['name'].lower()
-            if 'sha256' in name_lower or 'checksum' in name_lower or 'sha256sum' in name_lower:
+            if any(keyword in name_lower for keyword in ['sha256', 'checksum', 'hash', 'sum']):
                 checksum_asset = asset
+                logger.debug(f"Found potential checksum asset: {asset['name']}")
                 break
         
         if checksum_asset:
-            logger.debug(f"Found checksum asset: {checksum_asset['name']}")
-            checksum_response = requests.get(checksum_asset['browser_download_url'], headers=headers)
-            checksum_response.raise_for_status()
-            checksum_text = checksum_response.text
-            checksum = find_checksum_in_text(checksum_text, filename)
-            if checksum:
-                logger.info(f"Found matching checksum for {filename}")
+            logger.debug(f"Downloading checksum file: {checksum_asset['name']}")
+            try:
+                checksum_response = requests.get(checksum_asset['browser_download_url'], headers=headers)
+                checksum_response.raise_for_status()
+                checksum_text = checksum_response.text
+                logger.debug(f"Checksum file content:\n{checksum_text[:500]}")  # Log first 500 chars
+                checksum = find_checksum_in_text(checksum_text, filename)
+                if checksum:
+                    logger.info(f"Found matching checksum for {filename}")
+            except Exception as e:
+                logger.warning(f"Failed to download checksum file: {e}")
         
-        # Fallback: parse release body
+        # Fallback: parse release body for SHA256
         if not checksum and release.get('body'):
             logger.debug("Attempting to parse release body for checksum")
             checksum = find_checksum_in_text(release['body'], filename)
@@ -209,6 +200,7 @@ def install_teacher():
             logger.info(f"Remote SHA256: {checksum}")
         else:
             logger.warning("No remote checksum found - will compute local SHA256 only")
+            logger.warning("Veyon may not publish SHA256 checksums in releases")
         
         # Download installer
         output_file = temp_dir / filename
