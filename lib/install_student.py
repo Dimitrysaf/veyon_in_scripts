@@ -1,5 +1,5 @@
 """
-install_student.py - Veyon Student Installation Script
+install_student.py - Install for Students
 - Fetches latest Veyon release from GitHub API
 - Downloads win64 installer
 - Verifies SHA256 checksum

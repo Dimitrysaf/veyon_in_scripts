@@ -104,15 +104,10 @@ def display_menu():
         for i, script in enumerate(scripts, 1):
             description = get_script_description(script)
             
-            # Special note for uninstall
-            admin_note = ""
-            if script.name == "uninstall.py":
-                admin_note = " [REQUIRES ADMIN]" if not COLORS else f" {Fore.RED}[REQUIRES ADMIN]{Fore.CYAN}"
-            
             if COLORS:
-                print(Fore.WHITE + f"  {i}) {script.name:<30} {Fore.CYAN}{description}{admin_note}")
+                print(Fore.WHITE + f"  {i}) {script.name:<30} {Fore.CYAN}{description}")
             else:
-                print(f"  {i}) {script.name:<30} {description}{admin_note}")
+                print(f"  {i}) {script.name:<30} {description}")
     
     print()
     if COLORS:

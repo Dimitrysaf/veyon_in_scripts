@@ -1,5 +1,5 @@
 """
-install_teacher.py - Veyon Teacher Installation Script
+install_teacher.py - Install for Teachers
 - Fetches latest Veyon release from GitHub API
 - Downloads win64 installer
 - Verifies SHA256 checksum

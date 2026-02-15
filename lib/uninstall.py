@@ -1,5 +1,5 @@
 """
-uninstall.py - Veyon Complete Uninstallation Script
+uninstall.py - Uninstall Veyon
 - Runs uninstaller with UAC elevation
 - Asks user if they want to remove data
 - Removes ProgramData\Veyon with UAC elevation (if user confirms)
